@@ -84,6 +84,33 @@ timeout 应该胜出。connector-core 的 task queue 应该把它穿过来给 ad
 
 ---
 
+## Pre 集成测试 2026-05-07 发现
+
+### B11 — server min_version=1.0.0 下限不区分 platform（design 边界）
+
+`cutie-server/services/connector_service.py:290 is_version_supported(version)` 只看
+`KOL_AGENT_CONNECTOR_MIN_VERSION = "1.0.0"`，不区分 platform。zylos-cutie 0.1.0 被拒
+（"Connector version is too old"）。Pre 实测时绕开方法：register 时手动 `connector_version=1.0.0` —— 集成链路全通。
+
+**真修方案 A**（推荐）：Pre 验证 + 准备 ship 公开 npm 时把 zylos-cutie 直接 bump 到 1.0.0
+- package.json version "0.1.0" → "1.0.0"
+- src/version.ts COMPONENT_VERSION '0.1.0' → '1.0.0'
+- tests/version.test.ts 自动校验同步无须改
+
+理由：MVP first public release 用 1.0.0 是 npm 习惯（OpenClaw connector 也是从 1.x 起步），且不破坏 spike 0.1.0 historical 标记。
+
+**真修方案 B**（更长期）：cutie-server `is_version_supported(version, platform)` 加 platform 参数，让 zylos 独立 min_version。需要 cutie-server 改动 + 部署。
+
+**当前选择**：Phase 2 ship 时走方案 A（直接 bump 1.0.0）；方案 B 留给 Phase 3 多 platform 演进时一起做。
+
+### B12 — DB CHECK 约束 + Python 白名单同步
+
+Migration 071 已部署 Pre：`kol_agent_configs.agent_platform` CHECK 加 zylos。
+**教训**：IMPL.md §2 调研只 grep Python 字典就判定"无 schema migration"是错的，必须
+grep CHECK constraint。已写 `.claude/rules/sql-safety.md` 的 governance 规则补丁建议。
+
+---
+
 ## 复审遗留（review HIGH 修过但需要补单测覆盖）
 
 ### B8 — runner.ts spawn 后路径单测（Review pr-test H1 + silent-failure H1-H3）
