@@ -1,6 +1,6 @@
 ---
 name: cutie
-version: 2.2.0
+version: 2.3.0
 description: >
   Cutie 加密货币 KOL 私域社群组件。Use when KOL 在 Cutie App / Web 收到关注用户
   提问，希望让 KOL 自训的 Claude / Codex agent 在 KOL 自己 Zylos 主机上以 SRT
@@ -90,6 +90,7 @@ SRT 沙箱按设计隔离 `~/zylos/memory/`（KOL 主 agent 私密 memory），c
 |---|---|
 | KOL 刚跑完 `zylos add cutie-crypto/zylos-cutie` 或 `cutie-pair` 后 | 主动告诉 KOL：分身现在还没人格，建议你帮他写一份初始的 `profile.md` + `strategy.md`。征得同意后开始 |
 | KOL 跟你说"帮我配置 Cutie 分身" / "让 AI 分身像我说话" / "让我的 followers 看到的回复像我" | 直接进入写入流程（见下方） |
+| KOL 跟你说"帮我安排 cutie 定时同步" / "每天自动同步" | 用 host 上的 cron / at / zylos schedule 注册一个 daily 任务，扫当天对话提取增量 → 写 `views.md` / `notes.md` → 给 KOL 1-2 行日报。详见下方"定时同步"段 |
 | 日常对话中 KOL 聊到投资观点 / 交易策略 / 持仓复盘 / 行情判断 | 判断这条信息**对外可分享**时，问一句"要不要我把这条也加到 cutie 的 `views.md` / `notes.md`？"，得到同意后增量追加 |
 | KOL 说"我的 cutie 分身回答错了/ 不像我" | 引导：是 `profile.md`/`strategy.md` 不够，还是 `constraints.md` 没禁止某话题。一起检查 / 更新 |
 
@@ -114,6 +115,53 @@ SRT 沙箱按设计隔离 `~/zylos/memory/`（KOL 主 agent 私密 memory），c
 4. **写法**：每个文件用覆盖写（`profile.md` / `strategy.md` / `constraints.md` / `views.md`），`notes.md` 用追加
 5. **生效**：**不需要重启 zylos-cutie**。`prompt-builder` 按文件 mtime 自动失效缓存，下次 task 即生效
 6. **后续**：建议 KOL 在 `~/zylos/components/cutie/knowledge/` 下自己再过一遍，可手动编辑修正
+
+### 定时同步（推荐安排一次，长期生效）
+
+zylos-cutie 的 KOL 个性化人格不是从主 memory 自动同步过来的（设计上沙箱隔离 `~/zylos/memory/`），所以人格内容容易"年久失修"——当前观点过期、新策略没追加、新禁忌没补。
+解决办法：你（主 agent）帮 KOL 注册一个定时任务，每天把增量同步到 cutie 的 `knowledge/`。
+
+#### 同步频率
+
+- 推荐 **每天一次**（KOL 复盘时间附近，例如 22:00）
+- 也可以 **每周一次**（KOL 不怎么聊投资时）
+- KOL 没明确要求时按"每天一次"安排
+
+#### 实现方式（按 host 能力任选其一）
+
+- **host cron**：`crontab -e` 加一行 `0 22 * * * <你的 trigger 命令>`
+- **systemd timer**：`~/.config/systemd/user/cutie-sync.timer` + service
+- **at 一次性**：`echo "..." | at 22:00`，每跑完再排下一次
+- **Zylos schedule**：如果 zylos runtime 提供任务调度 API，优先用它
+- 任意你能在这台 host 上用的"定时唤醒主 agent"机制都行
+
+trigger 命令的目标是"把你（主 agent）唤起来执行同步流程"——具体怎么唤醒取决于 zylos runtime 怎么暴露主 agent CLI。如果不确定，先建一个 daily reminder 让 KOL 手动喊"开始同步"也比没有强；KOL 用顺手了再升级到自动。
+
+#### 单次同步的步骤
+
+1. **扫描时间窗**：上次同步至今（或当天）KOL 跟你聊过的投资观点 / 策略调整 / 持仓复盘 / 禁忌补充
+2. **去重 + 提取**：跟 `knowledge/` 下已有内容比对，只提取增量；过滤"私密 / 不该外传"的部分
+3. **判断目标文件**：
+   - 临时观点 / 行情判断 → `views.md`（覆盖写当前有效观点；过期判断主动清掉）
+   - 方法论调整 / 框架升级 → `strategy.md`（仅在 KOL 显式调整时改，定时同步不动它）
+   - 新禁忌话题 → `constraints.md`（仅在 KOL 显式调整时改）
+   - 零散补充 / 风格细节 → `notes.md`（追加）
+4. **写入策略**：定时同步走"先写后报"模式（同步日报里列改动，KOL 看到不对劲再让你回滚），但若需改 `strategy.md` / `constraints.md` / `profile.md` 这三份"长期身份"文件，仍走 ask-before-write
+5. **同步日报**：给 KOL 留一条 1-2 行简报，例如：
+   `[cutie sync 2026-05-08] 追加 views.md 1 条（BTC 短线观点）+ notes.md 2 条；清理 views.md 过期判断 1 条（3 月 50k 已无效）`
+
+#### 时效管理
+
+- `views.md` = "当前观点"，保留近 30 天有效内容；超期且 KOL 没再提的判断 → 主动归档到 `notes.md` 末尾归档区或清掉
+- `notes.md` = "累积笔记"，可无限追加，但每月主动检查重复 / 过期 / 与 `strategy.md` 冲突的内容 → 整理掉
+- `profile.md` / `strategy.md` / `constraints.md` = "长期身份"，仅在 KOL 显式调整时改，定时任务不要碰
+
+#### 边界（强制）
+
+- 定时同步只写 `~/zylos/components/cutie/knowledge/`，不要触发 zylos-cutie 沙箱内逻辑（你是主 agent 在 host 域写文件即可）
+- 同步过程不要打扰 KOL（仅最后一条日报通知）
+- 连续 3 次同步发现"当天没有可同步内容"，可降频建议 KOL 改成每周
+- 如果 KOL 让你停掉定时同步，删除对应 cron / timer / at job
 
 ### 边界（强制）
 
