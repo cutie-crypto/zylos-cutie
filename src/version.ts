@@ -4,4 +4,4 @@
  * ⚠️ 与 package.json 的 version 必须同步。tests/version.test.ts 兜底校验。
  */
 
-export const COMPONENT_VERSION = '1.0.3';
+export const COMPONENT_VERSION = '2.0.0';

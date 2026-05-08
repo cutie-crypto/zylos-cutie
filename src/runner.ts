@@ -36,20 +36,20 @@ const __dirname = path.dirname(__filename);
 const SRT_CLI = path.resolve(__dirname, '../node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js');
 const SRT_CLI_FALLBACK = path.resolve(__dirname, '../../node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js');
 
-// B6 partial fix：connector-core 0.1.0 的 callAgent(message, model) 没透传 task.push.timeout_seconds，
-// 暂时让 KOL 用 ZYLOS_TASK_TIMEOUT_MS env 覆盖默认 60s。core 0.2.0 改成接 timeout 字段后这条 env 可去掉。
-const DEFAULT_TIMEOUT_MS = (() => {
-  const raw = process.env['ZYLOS_TASK_TIMEOUT_MS'];
-  if (!raw) return 60_000;
-  const parsed = parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
-})();
+// 0.2.0 B6：connector-core 0.2.0 dispatcher 在 wire 边界 clamp 过 timeout_seconds 后透传过来，
+// adapter 必传 input.timeout_ms 给 runner。这里保留 60s default 仅给绕开 adapter 直接调
+// runTask 的单元测试 / 调试 harness 用——production 走 adapter 时 timeout_ms 永远是有效正数。
+// 之前的 ZYLOS_TASK_TIMEOUT_MS env override 已删——核心透传链路通了，env override 是冗余配置面。
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 export interface RunTaskInput {
   prompt: string;
   /** 默认读 state/runtime.json 的 chosen；显式传入会跳过 state 文件检查（仅供测试）*/
   runtime?: 'claude' | 'codex';
-  /** 默认 60s */
+  /**
+   * 单 task 超时毫秒数。生产路径下 adapter 必传（来自 server task.push.timeout_seconds），
+   * 直接调 runTask 时省略 → 默认 60s。
+   */
   timeout_ms?: number;
 }
 

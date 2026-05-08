@@ -6,7 +6,21 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { TaskInput } from '@cutie-crypto/connector-core';
 import { ErrorType } from '../src/errors.js';
+
+/**
+ * 标准 TaskInput 模板：tests 各自 spread 这个再覆写需要变化的字段。
+ * 0.2.0 把整份 task envelope 透传给 adapter（之前只有 message + model）。
+ */
+const VALID_INPUT: TaskInput = {
+  message: 'ping',
+  model: 'cutie',
+  kol_user_id: 'kol-1',
+  caller_user_id: 'caller-2',
+  scene: 'app_kol_ask',
+  timeout_ms: 60_000,
+};
 
 const cacheTemplatesMock = vi.fn();
 const buildPromptMock = vi.fn((input: { message: string }) => `BUILT[${input.message}]`);
@@ -31,13 +45,19 @@ beforeEach(() => {
 });
 
 describe('ZylosPlatformAdapter', () => {
-  it('callAgent 在 attachConfig 之前调用 → throw', async () => {
+  it('callAgent 在 attachConfig 之前调用 → 返回 RUNNER_FAILURE envelope（不再 throw）', async () => {
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
-    await expect(a.callAgent('hi', 'cutie')).rejects.toThrow(/attachConfig must be called first/);
+    const r = await a.callAgent(VALID_INPUT);
+    expect(r.status).toBe('error');
+    if (r.status === 'error') {
+      expect(r.error_type).toBe('RUNNER_FAILURE');
+      expect(r.error_message).toMatch(/attachConfig must be called first/);
+      expect(r.elapsed_ms).toBe(0);
+    }
   });
 
-  it('callAgent 成功路径：runTask success → 返回 AgentResult', async () => {
+  it('callAgent 成功路径：runTask success → 返回 AgentResult with status="success"', async () => {
     runTaskMock.mockResolvedValue({
       status: 'success',
       answer: 'hello world',
@@ -47,46 +67,132 @@ describe('ZylosPlatformAdapter', () => {
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
     a.attachConfig({ chosen_runtime: 'claude' });
-    const r = await a.callAgent('ping', 'cutie');
-    expect(r).toEqual({ answer: 'hello world', latency_ms: 1234 });
+    const r = await a.callAgent(VALID_INPUT);
+    expect(r).toEqual({ status: 'success', answer: 'hello world', latency_ms: 1234 });
     expect(buildPromptMock).toHaveBeenCalledOnce();
-    expect(runTaskMock).toHaveBeenCalledWith({ prompt: 'BUILT[ping]', runtime: 'claude' });
+    // 0.2.0 B6：runner 必须收到 input.timeout_ms 透传（不再走 ZYLOS_TASK_TIMEOUT_MS env）
+    expect(runTaskMock).toHaveBeenCalledWith({
+      prompt: 'BUILT[ping]',
+      runtime: 'claude',
+      timeout_ms: 60_000,
+    });
   });
 
-  it('callAgent 错误路径：runTask error → throw Error 含 error_type + detail', async () => {
+  it('callAgent B4：buildPrompt 收到真实 kol_user_id / caller_user_id / scene（不再 hardcode "unknown"）', async () => {
     runTaskMock.mockResolvedValue({
-      status: 'error',
-      error_type: ErrorType.SANDBOX_UNAVAILABLE,
-      detail: { reason: 'apparmor' },
+      status: 'success',
+      answer: 'ok',
+      elapsed_ms: 1,
+      raw_stdout_bytes: 2,
     });
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
     a.attachConfig({ chosen_runtime: 'claude' });
-    try {
-      await a.callAgent('ping', 'cutie');
-      expect.fail('should have thrown');
-    } catch (e) {
-      const err = e as Error & { error_type?: string; detail?: unknown };
-      expect(err.message).toBe('zylos runner SANDBOX_UNAVAILABLE');
-      expect(err.error_type).toBe(ErrorType.SANDBOX_UNAVAILABLE);
-      expect(err.detail).toEqual({ reason: 'apparmor' });
+    await a.callAgent({
+      ...VALID_INPUT,
+      kol_user_id: 'real-kol-id',
+      caller_user_id: 'real-caller-id',
+      scene: 'kol_chat',
+    });
+    expect(buildPromptMock).toHaveBeenCalledWith({
+      message: 'ping',
+      kol_user_id: 'real-kol-id',
+      caller_user_id: 'real-caller-id',
+      scene: 'kol_chat',
+    });
+  });
+
+  it('callAgent B6：input.timeout_ms 透传到 runTask（替代 ZYLOS_TASK_TIMEOUT_MS env）', async () => {
+    runTaskMock.mockResolvedValue({
+      status: 'success',
+      answer: 'ok',
+      elapsed_ms: 1,
+      raw_stdout_bytes: 1,
+    });
+    const { ZylosPlatformAdapter } = await import('../src/adapter.js');
+    const a = new ZylosPlatformAdapter();
+    a.attachConfig({ chosen_runtime: 'codex' });
+    await a.callAgent({ ...VALID_INPUT, timeout_ms: 12_345 });
+    expect(runTaskMock).toHaveBeenCalledWith(
+      expect.objectContaining({ timeout_ms: 12_345 }),
+    );
+  });
+
+  it('callAgent 错误路径：runTask SANDBOX_UNAVAILABLE → 返回 RunnerErrorEnvelope（不再 throw）', async () => {
+    runTaskMock.mockResolvedValue({
+      status: 'error',
+      error_type: ErrorType.SANDBOX_UNAVAILABLE,
+      detail: { reason: 'apparmor' },
+      elapsed_ms: 50,
+    });
+    const { ZylosPlatformAdapter } = await import('../src/adapter.js');
+    const a = new ZylosPlatformAdapter();
+    a.attachConfig({ chosen_runtime: 'claude' });
+    const r = await a.callAgent(VALID_INPUT);
+    expect(r.status).toBe('error');
+    if (r.status === 'error') {
+      expect(r.error_type).toBe('SANDBOX_UNAVAILABLE');
+      expect(r.error_message).toContain('SANDBOX_UNAVAILABLE');
+      expect(r.error_message).toContain('apparmor'); // detail 转 JSON 进 message
+      expect(r.elapsed_ms).toBe(50);
     }
   });
 
-  it('callAgent 错误路径：RUNNER_FAILURE 也包成 Error', async () => {
+  it('callAgent 错误路径：RUNNER_FAILURE → envelope 含 detail 文本', async () => {
     runTaskMock.mockResolvedValue({
       status: 'error',
       error_type: ErrorType.RUNNER_FAILURE,
       exit_code: 1,
       detail: 'something bad',
+      elapsed_ms: 100,
     });
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
     a.attachConfig({ chosen_runtime: 'codex' });
-    await expect(a.callAgent('ping', 'cutie')).rejects.toMatchObject({
-      message: 'zylos runner RUNNER_FAILURE',
-      error_type: ErrorType.RUNNER_FAILURE,
+    const r = await a.callAgent(VALID_INPUT);
+    expect(r.status).toBe('error');
+    if (r.status === 'error') {
+      expect(r.error_type).toBe('RUNNER_FAILURE');
+      expect(r.error_message).toBe('zylos runner RUNNER_FAILURE: something bad');
+      expect(r.elapsed_ms).toBe(100);
+    }
+  });
+
+  it('callAgent 错误路径：CONFIG_INVALID 映射为 connector-core RUNNER_FAILURE', async () => {
+    runTaskMock.mockResolvedValue({
+      status: 'error',
+      error_type: ErrorType.CONFIG_INVALID,
+      detail: 'srt-settings missing',
     });
+    const { ZylosPlatformAdapter } = await import('../src/adapter.js');
+    const a = new ZylosPlatformAdapter();
+    a.attachConfig({ chosen_runtime: 'claude' });
+    const r = await a.callAgent(VALID_INPUT);
+    expect(r.status).toBe('error');
+    if (r.status === 'error') {
+      // zylos CONFIG_INVALID 在 connector-core 公开 enum 里没有，映射到 RUNNER_FAILURE
+      expect(r.error_type).toBe('RUNNER_FAILURE');
+      // 但 zylos 原始字面量 CONFIG_INVALID 保留在 error_message 让 ops 能 grep
+      expect(r.error_message).toContain('CONFIG_INVALID');
+    }
+  });
+
+  it('callAgent 错误路径：QUEUE_FULL 映射为 connector-core RUNNER_UNAVAILABLE', async () => {
+    runTaskMock.mockResolvedValue({
+      status: 'error',
+      error_type: ErrorType.QUEUE_FULL,
+      detail: { queued: 3 },
+    });
+    const { ZylosPlatformAdapter } = await import('../src/adapter.js');
+    const a = new ZylosPlatformAdapter();
+    a.attachConfig({ chosen_runtime: 'claude' });
+    const r = await a.callAgent(VALID_INPUT);
+    expect(r.status).toBe('error');
+    if (r.status === 'error') {
+      // zylos QUEUE_FULL 映射到 RUNNER_UNAVAILABLE（runner 临时不可用，不是真崩）
+      expect(r.error_type).toBe('RUNNER_UNAVAILABLE');
+      expect(r.error_message).toContain('QUEUE_FULL');
+    }
   });
 
   it('augmentHeartbeat 不加任何字段（保持 OpenClaw 兼容性不混入）', async () => {

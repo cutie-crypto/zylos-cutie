@@ -20,11 +20,46 @@ import {
   type CorePlatformAdapter,
   type SafetyTemplates,
   type AgentResult,
+  type RunnerErrorEnvelope,
+  type TaskInput,
 } from '@cutie-crypto/connector-core';
 import { applySafetyTemplates as cacheTemplates } from './safety-templates.js';
 import { buildPrompt } from './prompt-builder.js';
 import { runTask } from './runner.js';
+import { ErrorType } from './errors.js';
 import { log } from './logger.js';
+
+/**
+ * zylos 自己的 ErrorType 枚举（src/errors.ts）比 connector-core 的
+ * RunnerErrorEnvelope.error_type 多 CONFIG_INVALID / QUEUE_FULL 两个值，
+ * 缺 GATEWAY_UNAVAILABLE / AGENT_REJECTED（zylos 不走 HTTP gateway）。
+ * 把 zylos 内部分类映射到 connector-core 公开的窄 union。
+ */
+function mapZylosErrorType(zylosType: ErrorType): RunnerErrorEnvelope['error_type'] {
+  switch (zylosType) {
+    case 'SANDBOX_UNAVAILABLE':
+      return 'SANDBOX_UNAVAILABLE';
+    case 'RUNNER_UNAVAILABLE':
+      return 'RUNNER_UNAVAILABLE';
+    case 'RUNNER_TIMEOUT':
+      return 'RUNNER_TIMEOUT';
+    case 'RUNNER_FAILURE':
+      return 'RUNNER_FAILURE';
+    case 'CONFIG_INVALID':
+      // adapter / 沙箱配置非法：不是 runner 本身故障，但 connector-core 的窄 enum
+      // 没有更精确的值，归到 RUNNER_FAILURE 并在 error_message 里保留 CONFIG_INVALID
+      // 字面文本，方便 ops 在 server 日志 grep。
+      return 'RUNNER_FAILURE';
+    case 'QUEUE_FULL':
+      // 单 KOL 队列满（MVP 单并发，queued > 0 即拒收）：runner 临时不可用，
+      // 不是 runner 进程故障——映射到 RUNNER_UNAVAILABLE 让 server 端可以重试。
+      return 'RUNNER_UNAVAILABLE';
+    default: {
+      const _exhaustive: never = zylosType;
+      return _exhaustive;
+    }
+  }
+}
 
 const SELF_UPGRADE_TIMEOUT_MS = 5 * 60 * 1000;
 const STDOUT_FLUSH_TIMEOUT_MS = 2000;
@@ -49,30 +84,55 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     this.cfg = config;
   }
 
-  async callAgent(message: string, _model: string): Promise<AgentResult> {
+  async callAgent(input: TaskInput): Promise<AgentResult | RunnerErrorEnvelope> {
     if (!this.cfg) {
-      throw new Error('ZylosPlatformAdapter.callAgent: attachConfig must be called first');
+      // 0.2.0：attachConfig 没调走 envelope（不再 throw），dispatcher 走结构化错误路径。
+      // elapsed_ms=0：早返回路径，没真去 runner。
+      return {
+        status: 'error',
+        error_type: 'RUNNER_FAILURE',
+        error_message: 'ZylosPlatformAdapter.callAgent: attachConfig must be called first',
+        elapsed_ms: 0,
+      };
     }
-    // _model 来自 server task.payload.agent_model；当前 claude / codex CLI 不接受
+    // input.model 来自 server task.payload.agent_model；当前 claude / codex CLI 不接受
     // 任意 model id 切换（claude code 用账户绑定的默认模型；codex 走 ~/.codex/config.toml），
     // 所以这里忽略，留作 P1 演进字段。
     const prompt = buildPrompt({
-      message,
-      // adapter 接口里 callAgent 没有 kol_user_id，只有 message。MVP 用 'unknown'，
-      // 等 connector-core 在 P1 把 kol_user_id 透传进 callAgent 再补全（详见 BACKLOG）。
-      kol_user_id: 'unknown',
+      message: input.message,
+      // 0.2.0 B4：终于拿到真实 kol_user_id / caller_user_id / scene 而不是 'unknown'。
+      // prompt-builder 已经把这三个字段塞进 # CONTEXT 段；本次不需要改 prompt-builder。
+      kol_user_id: input.kol_user_id,
+      caller_user_id: input.caller_user_id,
+      scene: input.scene,
     });
-    const result = await runTask({ prompt, runtime: this.cfg.chosen_runtime });
-    if (result.status !== 'success') {
-      // core 期待 callAgent 抛错或返回 answer；这里把结构化错误转 Error message，
-      // core 会把 task.result 标 status=error。详见 BACKLOG #1：是否要让 core
-      // 直接消费 RunnerError envelope 而不是转 Error。
-      throw Object.assign(
-        new Error(`zylos runner ${result.error_type}`),
-        { error_type: result.error_type, detail: result.detail },
-      );
+    // 0.2.0 B6：runner timeout 用 server task.push 透传过来的 input.timeout_ms，
+    // 不再走 ZYLOS_TASK_TIMEOUT_MS env override（已删）。dispatcher 在 wire 边界
+    // clamp 过 0/NaN，runner 拿到的永远是有效正数。
+    const result = await runTask({
+      prompt,
+      runtime: this.cfg.chosen_runtime,
+      timeout_ms: input.timeout_ms,
+    });
+    if (result.status === 'success') {
+      return {
+        status: 'success',
+        answer: result.answer,
+        latency_ms: result.elapsed_ms,
+      };
     }
-    return { answer: result.answer, latency_ms: result.elapsed_ms };
+    // 0.2.0 B5：runner 失败转 envelope 而不是 throw + Object.assign。
+    // detail 被丢进 error_message（详见 connection.ts dispatcher 注释；server CHECK
+    // 约束当前只接受 'openclaw_error'，结构化字段都压进 error_message 前缀）。
+    const detailStr = typeof result.detail === 'string'
+      ? `: ${result.detail}`
+      : (result.detail ? `: ${JSON.stringify(result.detail).slice(0, 300)}` : '');
+    return {
+      status: 'error',
+      error_type: mapZylosErrorType(result.error_type),
+      error_message: `zylos runner ${result.error_type}${detailStr}`,
+      elapsed_ms: result.elapsed_ms ?? 0,
+    };
   }
 
   async selfUpgrade(targetVersion: string): Promise<void> {
