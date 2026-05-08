@@ -76,11 +76,42 @@ export function buildPrompt(
   return sections.join('\n\n');
 }
 
+/**
+ * Knowledge digest 缓存（按 mtime 失效，避免每个 task 都全量重读）。
+ * Cache key 由 (maxBytes, dir-not-exists-flag, sorted [filename, mtimeMs] 元组列表) 组成；
+ * 任一文件 mtime 变化、新增/删除文件、KNOWLEDGE_DIR 出现/消失，都会重新计算。
+ */
+let knowledgeDigestCache: { key: string; result: string } | null = null;
+
+export function clearKnowledgeDigestCache(): void {
+  knowledgeDigestCache = null;
+}
+
 function readKnowledgeDigest(maxBytes: number): string {
-  if (!fs.existsSync(KNOWLEDGE_DIR)) return '';
+  if (!fs.existsSync(KNOWLEDGE_DIR)) {
+    const key = `${maxBytes}|<no-dir>`;
+    if (knowledgeDigestCache?.key === key) return knowledgeDigestCache.result;
+    knowledgeDigestCache = { key, result: '' };
+    return '';
+  }
   const files = fs.readdirSync(KNOWLEDGE_DIR)
     .filter(f => f.endsWith('.md') || f.endsWith('.txt'))
     .sort();
+
+  const keyParts: string[] = [String(maxBytes)];
+  for (const f of files) {
+    try {
+      const st = fs.statSync(path.join(KNOWLEDGE_DIR, f));
+      keyParts.push(`${f}:${st.mtimeMs}:${st.size}`);
+    } catch {
+      // 单文件 stat 失败时跳过它（不影响 digest 计算，与下面的 readFile try/catch 一致）
+    }
+  }
+  const key = keyParts.join('|');
+
+  if (knowledgeDigestCache?.key === key) {
+    return knowledgeDigestCache.result;
+  }
 
   const parts: string[] = [];
   let used = 0;
@@ -104,5 +135,7 @@ function readKnowledgeDigest(maxBytes: number): string {
     parts.push(block);
     used += block.length;
   }
-  return parts.join('').trim();
+  const result = parts.join('').trim();
+  knowledgeDigestCache = { key, result };
+  return result;
 }

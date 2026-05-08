@@ -5,13 +5,16 @@
  *   1. callAgent: spawn claude / codex CLI（不是 HTTP gateway）
  *   2. attachConfig: 接受 ZylosAdapterConfig（不依赖 OpenClaw / Hermes 字段）
  *   3. applySafetyTemplates: **缓存**而非写 workspace（claude/codex 没有原生加载机制）
- *   4. selfUpgrade: 调 zylos upgrade cutie（PM2 自动重启 service）
+ *   4. selfUpgrade: 自适应升级（zylos add 装的走 zylos upgrade，npm-global 装的走 npm install -g）
  *   5. 不依赖 systemd / PM2 进程管理（PM2 由 Zylos 外层守护）
  *   6. augmentHeartbeat: 不加任何字段（agent_status 是统一字段）
  *   7. README + 5-6 行 dummy adapter（在 README）
  *   8. getCapabilities: 上报 ['sandbox=srt', `runtime=${chosen}`]
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 import {
   type CorePlatformAdapter,
@@ -63,18 +66,42 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
   }
 
   async selfUpgrade(targetVersion: string): Promise<void> {
-    // Zylos 不允许静默升级（11-IMPL §14.2），需要用户/agent 授意。
-    // 我们走标准 `zylos upgrade cutie`，让 zylos CLI 走它自己的提示路径。
-    // 升级成功后 PM2 会重启服务，process 自然退出。
-    await new Promise<void>((resolve, reject) => {
-      execFile('zylos', ['upgrade', 'cutie'], { timeout: 5 * 60 * 1000 }, (err) => {
-        if (err) return reject(err);
-        resolve();
+    // 升级路径自适应安装方法（kolzy / 其他用户两条路径均要支持）：
+    //   - 装在 zylos lifecycle 里（`zylos add cutie-crypto/zylos-cutie`）→ 走 `zylos upgrade cutie`，
+    //     由 zylos CLI 拉 github tarball + npm install + 重启 PM2。
+    //   - 装在 npm-global 里（`npm install -g @cutie-crypto/zylos-cutie`，spike 路径）→ 走
+    //     `npm install -g @cutie-crypto/zylos-cutie@<targetVersion>` + `process.exit(0)` 让 PM2 自动重启。
+    // 检测方式：读 ~/zylos/.zylos/components.json 看 cutie 是否注册。
+    const usesZylosLifecycle = isZylosManagedComponent('cutie');
+
+    if (usesZylosLifecycle) {
+      await new Promise<void>((resolve, reject) => {
+        execFile('zylos', ['upgrade', 'cutie'], { timeout: 5 * 60 * 1000 }, (err) => {
+          if (err) return reject(err);
+          resolve();
+        });
       });
+      // eslint-disable-next-line no-console
+      console.log(`[zylos-cutie] selfUpgrade requested target=${targetVersion} via zylos CLI`);
+      return;
+    }
+
+    // npm-global 路径：直接 install 全局包后 process.exit，PM2 watchdog 会拉起新 process 加载新代码。
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        'npm',
+        ['install', '-g', `@cutie-crypto/zylos-cutie@${targetVersion}`],
+        { timeout: 5 * 60 * 1000 },
+        (err) => {
+          if (err) return reject(err);
+          resolve();
+        },
+      );
     });
-    // 显式记录，便于 PM2 out.log 审计
     // eslint-disable-next-line no-console
-    console.log(`[zylos-cutie] selfUpgrade requested target=${targetVersion}; zylos CLI handles restart`);
+    console.log(`[zylos-cutie] upgraded to v${targetVersion} via npm install -g; exiting for PM2 restart`);
+    // 给 stdout flush 一点时间再 exit
+    setTimeout(() => process.exit(0), 250);
   }
 
   augmentHeartbeat(envelope: Record<string, unknown>): Record<string, unknown> {
@@ -92,5 +119,18 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
 
   applySafetyTemplates(templates: SafetyTemplates): void {
     cacheTemplates(templates);
+  }
+}
+
+/** Exported for unit tests; production code should not call directly. */
+export function isZylosManagedComponent(name: string): boolean {
+  const componentsFile = path.join(os.homedir(), 'zylos', '.zylos', 'components.json');
+  try {
+    const raw = fs.readFileSync(componentsFile, 'utf8');
+    const components = JSON.parse(raw) as Record<string, unknown>;
+    return Boolean(components[name]);
+  } catch {
+    // 文件不存在 / JSON parse 失败 → 视为非 zylos lifecycle
+    return false;
   }
 }

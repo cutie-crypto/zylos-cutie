@@ -1,6 +1,6 @@
 ---
 name: cutie
-version: 0.1.0
+version: 1.0.2
 description: >
   Cutie 加密货币 KOL 私域社群组件。Use when KOL 在 Cutie App / Web 收到关注用户
   提问，希望让 KOL 自训的 Claude / Codex agent 在 KOL 自己 Zylos 主机上以 SRT

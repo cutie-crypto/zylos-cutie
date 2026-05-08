@@ -5,7 +5,7 @@
  * getCapabilities / applySafetyTemplates 五条公开接口。
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ErrorType } from '../src/errors.js';
 
 const cacheTemplatesMock = vi.fn();
@@ -134,5 +134,70 @@ describe('ZylosPlatformAdapter', () => {
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
     expect(a.id).toBe('zylos');
+  });
+
+  describe('isZylosManagedComponent — selfUpgrade 路径检测', () => {
+    let tmpHome: string;
+    let originalHome: string | undefined;
+
+    beforeEach(async () => {
+      const fs = (await import('node:fs')).default;
+      const os = (await import('node:os')).default;
+      const path = (await import('node:path')).default;
+      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-cutie-isZ-'));
+      originalHome = process.env.HOME;
+      process.env.HOME = tmpHome;
+    });
+
+    afterEach(async () => {
+      const fs = (await import('node:fs')).default;
+      if (originalHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = originalHome;
+      }
+      fs.rmSync(tmpHome, { recursive: true, force: true });
+    });
+
+    it('components.json 不存在 → false（npm-global 路径）', async () => {
+      const { isZylosManagedComponent } = await import('../src/adapter.js');
+      expect(isZylosManagedComponent('cutie')).toBe(false);
+    });
+
+    it('components.json 存在但不含 cutie 条目 → false', async () => {
+      const fs = (await import('node:fs')).default;
+      const path = (await import('node:path')).default;
+      const dir = path.join(tmpHome, 'zylos', '.zylos');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'components.json'), JSON.stringify({ telegram: { version: '1.0.0' } }));
+
+      const { isZylosManagedComponent } = await import('../src/adapter.js');
+      expect(isZylosManagedComponent('cutie')).toBe(false);
+    });
+
+    it('components.json 含 cutie 条目 → true（zylos lifecycle 路径）', async () => {
+      const fs = (await import('node:fs')).default;
+      const path = (await import('node:path')).default;
+      const dir = path.join(tmpHome, 'zylos', '.zylos');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'components.json'),
+        JSON.stringify({ cutie: { version: '1.0.0', repo: 'cutie-crypto/zylos-cutie' } }),
+      );
+
+      const { isZylosManagedComponent } = await import('../src/adapter.js');
+      expect(isZylosManagedComponent('cutie')).toBe(true);
+    });
+
+    it('components.json 损坏（不是合法 JSON）→ false', async () => {
+      const fs = (await import('node:fs')).default;
+      const path = (await import('node:path')).default;
+      const dir = path.join(tmpHome, 'zylos', '.zylos');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'components.json'), 'not-json{{{');
+
+      const { isZylosManagedComponent } = await import('../src/adapter.js');
+      expect(isZylosManagedComponent('cutie')).toBe(false);
+    });
   });
 });
