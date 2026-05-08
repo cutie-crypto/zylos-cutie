@@ -104,8 +104,7 @@ prompt carrier.
 - **No web tools, no shell, no code execution.** Disabled by CLI args + denied by SRT
   network allowlist.
 
-See `cutie-docs/research/coco-zylos/13-ZYLOS-SPIKE-RESULT.md` for the spike that locked
-in these boundaries.
+The sandbox boundary is locked in by an internal spike report.
 
 ## Configuration
 
@@ -153,14 +152,12 @@ npm run smoke             # end-to-end smoke (mock pair → SRT → real claude/
 |---|---|---|
 | `SANDBOX_UNAVAILABLE` | bwrap / sandbox-exec missing, or AppArmor blocks userns | Install dependencies, or disable AppArmor restrict (Ubuntu 24.04+) |
 | `RUNNER_UNAVAILABLE` | no `claude` / `codex` in PATH | Install Claude Code or `npm i -g @openai/codex` |
-| `RUNNER_TIMEOUT` | AI provider slow or task too long | Default is 60s; KOL can raise via PR-based config knob (BACKLOG #2) |
+| `RUNNER_TIMEOUT` | AI provider slow or task too long | Default is 60s; override with `ZYLOS_TASK_TIMEOUT_MS` env var in your PM2 ecosystem |
 | service idle, never picks tasks | not paired | Run `cutie-pair <pair_token>` then `pm2 restart zylos-cutie` |
 
-## Architecture references
+## Architecture
 
-- [`cutie-docs/research/coco-zylos/11-ZYLOS-CUTIE-IMPL.md`](https://github.com/cutie-crypto/cutie-docs/blob/main/research/coco-zylos/11-ZYLOS-CUTIE-IMPL.md) — design doc
-- [`cutie-docs/research/coco-zylos/13-ZYLOS-SPIKE-RESULT.md`](https://github.com/cutie-crypto/cutie-docs/blob/main/research/coco-zylos/13-ZYLOS-SPIKE-RESULT.md) — Phase 1 spike result
-- [`@cutie-crypto/connector-core`](https://github.com/cutie-crypto/cutie-connector/tree/main/packages/connector-core) — protocol / WS / heartbeat / task queue (shared with `@cutie-crypto/connector`)
+- [`@cutie-crypto/connector-core`](https://www.npmjs.com/package/@cutie-crypto/connector-core) — protocol / WS / heartbeat / task queue framework, shared across Cutie connector adapters
 
 ## License
 

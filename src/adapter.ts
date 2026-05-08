@@ -76,10 +76,10 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
   }
 
   async selfUpgrade(targetVersion: string): Promise<void> {
-    // 升级路径自适应安装方法（kolzy / 其他用户两条路径均要支持）：
+    // 升级路径自适应安装方法（两条路径都支持）：
     //   - 装在 zylos lifecycle 里（`zylos add cutie-crypto/zylos-cutie`）→ 走 `zylos upgrade cutie`，
     //     由 zylos CLI 拉 github tarball + npm install + 重启 PM2。
-    //   - 装在 npm-global 里（`npm install -g @cutie-crypto/zylos-cutie`，spike 路径）→ 走
+    //   - 装在 npm-global 里（`npm install -g @cutie-crypto/zylos-cutie`）→ 走
     //     `npm install -g @cutie-crypto/zylos-cutie@<targetVersion>` + `process.exit(0)` 让 PM2 自动重启。
     // 检测方式：读 ~/zylos/.zylos/components.json 看 cutie 是否注册。
     const usesZylosLifecycle = isZylosManagedComponent('cutie');

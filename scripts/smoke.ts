@@ -5,7 +5,7 @@
  *   mockPair → applySafetyTemplates → 写 srt-settings → buildPrompt
  *   → runTask（SRT 包 claude / codex CLI）→ 打印 answer
  *
- * 不接 cutie-server。仅用于本机 dev 验证 adapter 闭环。
+ * Stand-alone — does not connect to any remote server. Local adapter loop only.
  *
  * 用法：
  *   npm run smoke                 # 用 detectRuntime 自动选 claude/codex
