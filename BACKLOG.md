@@ -4,19 +4,17 @@
 
 ## 阻塞 Phase 2 真上线（必清）
 
-### B1 — connector-core@0.1.0 缺 `ws` 运行依赖
+### B1 — connector-core@0.1.0 缺 `ws` 运行依赖 ✅ 已修复 (2026-05-08)
 
 **症状**：`@cutie-crypto/connector-core@0.1.0` 在 `connection.js` 里 `require('ws')`，
-但它自己 `package.json.dependencies` 漏写。结果是任何使用方（cutie-connector / zylos-cutie）
-必须在自己的 dependencies 里加 `ws`。
+但它自己 `package.json.dependencies` 漏写。
 
-**workaround**：zylos-cutie 在 dependencies 加了 `ws ^8.20.0` + `@types/ws ^8.18.1`。
-（cutie-connector 那边已经有了。）
+**修复**：connector-core 0.1.1 已发布到 npm（commit `570f82c`，sha `1400ed50`）：
+- `dependencies` 加 `ws ^8.20.0`
+- `devDependencies` 加 `@types/ws ^8.18.1`
+- `CORE_VERSION` 0.1.0 → 0.1.1（package.json 同步单测兜底）
 
-**真修**：connector-core 发 0.1.1 patch，把 `ws` 列入 `dependencies`，把 `@types/ws`
-列入 `devDependencies`。Phase 0 漏的，需要在主仓库立 PR。
-
-**owner**：connector-core 维护者（Phase 0 同人）。
+zylos-cutie 与 cutie-connector 的本地 ws 声明可保留作 belt-and-suspenders，无需立刻清理。
 
 ---
 
