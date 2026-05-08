@@ -46,25 +46,34 @@ heartbeat 平台校验需要放行。详细 IMPL 在
 
 ## 应该清，但不阻塞 0.1.0（P1）
 
-### B4 — adapter.callAgent 接口缺 `kol_user_id` 透传
+### B4 — adapter.callAgent 接口缺 `kol_user_id` 透传 [deferred]
 
 `CorePlatformAdapter.callAgent(message, model)` 当前只接收 message。zylos-cutie
 的 `ZylosPlatformAdapter.callAgent` 在调 `buildPrompt` 时只能写 `kol_user_id: 'unknown'`。
 
-**真修**：connector-core 0.2.0 把 `callAgent` 改为 `callAgent(input: { message, model, kol_user_id, caller_user_id, scene })`。
+**真修**：connector-core 0.2.0 把 `callAgent` 改为 `callAgent(input: { message, model, kol_user_id, caller_user_id, scene, timeout_ms })`。
 影响 cutie-connector 的 OpenClaw / Hermes adapter 都要改。
+
+**deferral 理由（2026-05-08）**：
+- 当前 prompt-builder 不依赖 kol_user_id 做关键个性化（仅在日志/memory 路径用作 namespace，'unknown' 仍然 functional）
+- 0.2.0 是 3 包 breaking 联动（connector-core 0.2.0 + cutie-connector 3.x + zylos-cutie 1.1.x）
+- kolzy@134 demo 当前 stable，B4 价值兑现要等 prompt-builder 真用上 `kol_user_id`（feature 28 / 29 关联场景）
+
+**触发条件**：下一个真正用 `kol_user_id` 做 prompt 个性化或 memory 隔离的 feature 启动时同步升级。和 B5 + B6 完整修一起做。
 
 **owner**：connector-core 维护者；要协调 cutie-connector + zylos-cutie 同步升级。
 
 ---
 
-### B5 — adapter.callAgent 期望抛 Error 而非返回 RunnerError envelope
+### B5 — adapter.callAgent 期望抛 Error 而非返回 RunnerError envelope [deferred]
 
 zylos runner 自然产物是 `RunnerResult`（success | error_type）。core 当前期待
 `callAgent` 抛错或 return AgentResult。我们用 `Object.assign(new Error(...), {error_type, detail})`
 桥接，但这丢失了 envelope 类型。
 
 **真修**：core 0.2.0 把 `callAgent` 返回值改为 union，让 adapter 直接 return 结构化错误。
+
+**deferral 理由（2026-05-08）**：与 B4 共享 0.2.0 release window，单独修不划算。当前 Object.assign Error 桥接 functional，error_type 仍能传到 server task.result envelope。
 
 ---
 
