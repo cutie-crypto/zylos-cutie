@@ -136,6 +136,53 @@ describe('ZylosPlatformAdapter', () => {
     expect(a.id).toBe('zylos');
   });
 
+  describe('runUpgradeCommand — 失败诊断 log', () => {
+    it('成功命令 → resolve UpgradeExecResult，log.info 不抛', async () => {
+      const { runUpgradeCommand } = await import('../src/adapter.js');
+      // /bin/echo 在 macOS / Linux 都有，stdout 立刻返回 0
+      const result = await runUpgradeCommand('/bin/echo', ['hello'], '1.0.3', 'test');
+      expect(result.stdout).toContain('hello');
+      expect(result.stderr).toBe('');
+      expect(result.elapsed_ms).toBeGreaterThanOrEqual(0);
+    });
+
+    it('命令不存在 → reject + 错误 log 含 stderr / exit_code 诊断字段', async () => {
+      const { runUpgradeCommand } = await import('../src/adapter.js');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        await expect(
+          runUpgradeCommand('/usr/bin/this-cmd-must-not-exist-xy', ['arg'], '1.0.3', 'test'),
+        ).rejects.toThrow();
+        // log.error 内部走 console.error；assert spy 收到 selfUpgrade command failed 行
+        const calls = errSpy.mock.calls.map((args) => args.join(' '));
+        const failedLine = calls.find((line) => line.includes('selfUpgrade command failed'));
+        expect(failedLine).toBeTruthy();
+        expect(failedLine).toContain('elapsed_ms');
+        expect(failedLine).toContain('err_message');
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+
+    it('exit code != 0 → reject + log 带 exit_code + stderr_tail', async () => {
+      const { runUpgradeCommand } = await import('../src/adapter.js');
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        // /bin/sh -c "echo OOPS >&2; exit 7" → exit 7 + stderr=OOPS
+        await expect(
+          runUpgradeCommand('/bin/sh', ['-c', 'echo OOPS >&2; exit 7'], '1.0.3', 'test'),
+        ).rejects.toThrow();
+        const calls = errSpy.mock.calls.map((args) => args.join(' '));
+        const failedLine = calls.find((line) => line.includes('selfUpgrade command failed'));
+        expect(failedLine).toBeTruthy();
+        expect(failedLine).toContain('"exit_code":7');
+        expect(failedLine).toContain('OOPS');
+      } finally {
+        errSpy.mockRestore();
+      }
+    });
+  });
+
   describe('isZylosManagedComponent — selfUpgrade 路径检测', () => {
     let tmpHome: string;
     let originalHome: string | undefined;

@@ -24,6 +24,16 @@ import {
 import { applySafetyTemplates as cacheTemplates } from './safety-templates.js';
 import { buildPrompt } from './prompt-builder.js';
 import { runTask } from './runner.js';
+import { log } from './logger.js';
+
+const SELF_UPGRADE_TIMEOUT_MS = 5 * 60 * 1000;
+const STDOUT_FLUSH_TIMEOUT_MS = 2000;
+
+interface UpgradeExecResult {
+  stdout: string;
+  stderr: string;
+  elapsed_ms: number;
+}
 
 export interface ZylosAdapterConfig {
   /** runtime 选定结果（'claude' | 'codex'），由 src/index.ts 探测后注入 */
@@ -73,35 +83,33 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     //     `npm install -g @cutie-crypto/zylos-cutie@<targetVersion>` + `process.exit(0)` 让 PM2 自动重启。
     // 检测方式：读 ~/zylos/.zylos/components.json 看 cutie 是否注册。
     const usesZylosLifecycle = isZylosManagedComponent('cutie');
+    const method = usesZylosLifecycle ? 'zylos-cli' : 'npm-global';
+    log.info('selfUpgrade started', { target_version: targetVersion, method });
 
     if (usesZylosLifecycle) {
-      await new Promise<void>((resolve, reject) => {
-        execFile('zylos', ['upgrade', 'cutie'], { timeout: 5 * 60 * 1000 }, (err) => {
-          if (err) return reject(err);
-          resolve();
-        });
+      const result = await runUpgradeCommand('zylos', ['upgrade', 'cutie'], targetVersion, method);
+      log.info('selfUpgrade completed via zylos CLI', {
+        target_version: targetVersion,
+        elapsed_ms: result.elapsed_ms,
+        stdout_tail: result.stdout.slice(-512),
       });
-      // eslint-disable-next-line no-console
-      console.log(`[zylos-cutie] selfUpgrade requested target=${targetVersion} via zylos CLI`);
       return;
     }
 
     // npm-global 路径：直接 install 全局包后 process.exit，PM2 watchdog 会拉起新 process 加载新代码。
-    await new Promise<void>((resolve, reject) => {
-      execFile(
-        'npm',
-        ['install', '-g', `@cutie-crypto/zylos-cutie@${targetVersion}`],
-        { timeout: 5 * 60 * 1000 },
-        (err) => {
-          if (err) return reject(err);
-          resolve();
-        },
-      );
+    const result = await runUpgradeCommand(
+      'npm',
+      ['install', '-g', `@cutie-crypto/zylos-cutie@${targetVersion}`],
+      targetVersion,
+      method,
+    );
+    log.info('selfUpgrade completed via npm install -g; exiting for PM2 restart', {
+      target_version: targetVersion,
+      elapsed_ms: result.elapsed_ms,
+      stdout_tail: result.stdout.slice(-512),
     });
-    // eslint-disable-next-line no-console
-    console.log(`[zylos-cutie] upgraded to v${targetVersion} via npm install -g; exiting for PM2 restart`);
-    // 给 stdout flush 一点时间再 exit
-    setTimeout(() => process.exit(0), 250);
+    await flushStdout();
+    process.exit(0);
   }
 
   augmentHeartbeat(envelope: Record<string, unknown>): Record<string, unknown> {
@@ -120,6 +128,65 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
   applySafetyTemplates(templates: SafetyTemplates): void {
     cacheTemplates(templates);
   }
+}
+
+/**
+ * 跑升级命令，捕获 stdout / stderr / 耗时。失败时把诊断字段写永久 log 再抛回 core
+ * （core 0.1.x 只 catch err.message，stderr / stdout 不带，调试 npm install / zylos
+ * upgrade 失败时只能靠这里的 log）。
+ *
+ * Exported for unit tests; production code should not call directly.
+ */
+export async function runUpgradeCommand(
+  command: string,
+  args: string[],
+  targetVersion: string,
+  method: string,
+): Promise<UpgradeExecResult> {
+  const t0 = Date.now();
+  return new Promise<UpgradeExecResult>((resolve, reject) => {
+    execFile(command, args, { timeout: SELF_UPGRADE_TIMEOUT_MS }, (err, stdout, stderr) => {
+      const elapsed_ms = Date.now() - t0;
+      // execFile 默认 encoding='utf8' → stdout/stderr 是 string；显式 cast 让 strict TS 不抱怨
+      const stdoutStr = (stdout ?? '') as string;
+      const stderrStr = (stderr ?? '') as string;
+      if (err) {
+        log.error('selfUpgrade command failed', {
+          target_version: targetVersion,
+          method,
+          command,
+          args,
+          elapsed_ms,
+          exit_code: typeof err.code === 'number' ? err.code : null,
+          signal: 'signal' in err ? (err as { signal?: string }).signal ?? null : null,
+          stderr_tail: stderrStr.slice(-1024),
+          stdout_tail: stdoutStr.slice(-512),
+          err_message: err.message,
+        });
+        return reject(err);
+      }
+      resolve({ stdout: stdoutStr, stderr: stderrStr, elapsed_ms });
+    });
+  });
+}
+
+/**
+ * 等 stdout drain 后再退出。setTimeout(250) 在 PM2 重定向到文件且 buffer 满时
+ * 不可靠，改用 stdout.write empty + drain event。最坏 2s 兜底。
+ */
+async function flushStdout(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const finish = () => {
+      clearTimeout(fallback);
+      resolve();
+    };
+    const fallback = setTimeout(finish, STDOUT_FLUSH_TIMEOUT_MS);
+    // 写一个零长度后等 drain；如果 stream 已 drain，直接 resolve
+    const ok = process.stdout.write('', () => finish());
+    if (ok) {
+      // 已经全部 drained，但仍走 callback 路径保证一致
+    }
+  });
 }
 
 /** Exported for unit tests; production code should not call directly. */

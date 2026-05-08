@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { SafetyTemplates } from '@cutie-crypto/connector-core';
 import { STATE_DIR, SAFETY_TEMPLATES_FILE } from './paths.js';
+import { log } from './logger.js';
 
 export interface CachedTemplates extends SafetyTemplates {
   cached_at: string;
@@ -53,15 +54,17 @@ export function loadSafetyTemplates(): CachedTemplates | null {
   try {
     raw = fs.readFileSync(SAFETY_TEMPLATES_FILE, 'utf8');
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(`[zylos-cutie] safety-templates read failed:`, err);
+    log.error('safety-templates read failed', { err: String(err), file: SAFETY_TEMPLATES_FILE });
     return null;
   }
   try {
     const parsed = JSON.parse(raw) as Partial<CachedTemplates>;
     if (typeof parsed.agents_md !== 'string' || typeof parsed.soul_md !== 'string') {
-      // eslint-disable-next-line no-console
-      console.error(`[zylos-cutie] safety-templates schema invalid (missing agents_md/soul_md)`);
+      log.error('safety-templates schema invalid (missing agents_md/soul_md)', {
+        file: SAFETY_TEMPLATES_FILE,
+        agents_md_type: typeof parsed.agents_md,
+        soul_md_type: typeof parsed.soul_md,
+      });
       return null;
     }
     return {
@@ -71,8 +74,7 @@ export function loadSafetyTemplates(): CachedTemplates | null {
       cached_at: typeof parsed.cached_at === 'string' ? parsed.cached_at : '',
     };
   } catch (err) {
-    // eslint-disable-next-line no-console
-    console.error(`[zylos-cutie] safety-templates JSON parse failed:`, err);
+    log.error('safety-templates JSON parse failed', { err: String(err), file: SAFETY_TEMPLATES_FILE });
     return null;
   }
 }
