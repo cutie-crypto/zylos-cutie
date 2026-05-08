@@ -88,10 +88,13 @@ timeout 应该胜出。connector-core 的 task queue 应该把它穿过来给 ad
 
 ---
 
-### B7 — knowledge digest 全量读取
+### B7 — knowledge digest 全量读取 ✅ 已修复 (2026-05-08, 1.0.2)
 
-`prompt-builder.readKnowledgeDigest` 每次 task 全量 read + concat。MVP 流量小不重要，
-百级 KOL / 千级 task/天后要加 mtime cache。
+`prompt-builder.readKnowledgeDigest` 改为按 (filename, mtimeMs, size) 元组缓存
+digest 结果。同一份 knowledge 文件不变 → cache hit，不再每 task 重读 + concat；
+任一文件 mtime / size 变化 / 新增 / 删除 / KNOWLEDGE_DIR 出现-消失 → 自动失效重算。
+单测 `tests/prompt-builder.test.ts > knowledge digest mtime cache` 5 case 覆盖
+hit / mtime-change / 增 / 删 / maxBytes-key 全部场景，80/80 测试全过。
 
 ---
 
@@ -237,6 +240,62 @@ cutie-server commit `2633564` 已新建 `tests/handlers/test_connector_register.
 
 - streaming（task.result.stream）
 - 多轮会话（task.push.conversation_id）
-- strategy-knowledge sync（cutie-connector 已有，zylos 重写一份就行）
 - per-KOL Web Search/Web Fetch 开关（看产品）
 - KOL Web 管理面板
+
+---
+
+### B16 — selfUpgrade 自适应路径检测 ✅ 已修复 (2026-05-08, 1.0.2)
+
+**症状**：`adapter.selfUpgrade` 1.0.1 硬编码 `zylos upgrade cutie`，但 kolzy@134 走的是 npm-global 安装路径
+（spike 期为绕开 install.sh 副作用，参见 `13-ZYLOS-SPIKE-RESULT.md`），`~/zylos/.zylos/components.json`
+没 cutie 条目，每个心跳尝试 auto-upgrade 都报 `Component 'cutie' is not registered in components.json`。
+kolzy log error.log 每 ~10 分钟一次 spam。
+
+**修复**：1.0.2 改为自适应——读 `~/zylos/.zylos/components.json` 看 cutie 是否注册；
+- 注册了（zylos add 路径）→ 走 `zylos upgrade cutie`，由 zylos CLI 拉 github tarball + npm install + 重启 PM2
+- 没注册（npm-global 路径）→ 走 `npm install -g @cutie-crypto/zylos-cutie@<targetVersion>` + `process.exit(0)`，PM2 watchdog 自动拉起新 process
+
+`isZylosManagedComponent()` 抽出为可测函数，`tests/adapter.test.ts` 新增 4 case 覆盖（无文件 / 文件存在但无 cutie / 文件存在且有 cutie / JSON 损坏）。
+
+**手动 bootstrap 步骤**（kolzy@134 已执行）：`npm install -g @cutie-crypto/zylos-cutie@1.0.2 && pm2 restart zylos-cutie`，
+之后未来 1.0.3+ 自动走新路径。
+
+---
+
+### B17 — strategy-sync 跨三 platform [pending, 触发条件]
+
+**触发条件**：KOL 数 ≥ 2 位数且 strategy 文档（soul / agent / 知识库）写得起来。
+
+**范围**：
+- Server 侧：增量同步通道（KOL 在 admin 改 strategy → 推 connector heartbeat_ack 携带 strategy_version + manifest）
+- Connector 侧（OpenClaw / Hermes / zylos 三个 adapter 都要支持）：
+  - 收到 strategy_version 跳变 → 拉 manifest → diff 落盘 `~/zylos/components/cutie/knowledge/`（zylos）/ workspace（OpenClaw / Hermes）
+  - 落盘后通过现有 `clearKnowledgeDigestCache()`（B7 已实现）让 prompt-builder 下次 task 重新计算 digest
+- 协议字段：register / heartbeat_ack envelope 新增 `strategy_version: int` + manifest fetch URL，连接器拉文件用 token
+
+**工期估计**：3-5 天（server 1d + 三个 connector 各 0.5-1d + 集成测试 1d）
+
+**owner**：等触发条件命中再排。
+
+---
+
+### B18 — task.push 安全字段灰度 [pending, 触发条件]
+
+**触发条件**：想给单条任务做更细粒度安全策略（比 register 期下发更灵活），且 OpenClaw / Hermes / zylos 三家同样受益。
+
+**范围**：
+- Server 侧：`task.push` envelope 加可选字段
+  - `system_prompt: str | None` — 单任务覆盖 register 期下发的 soul_md
+  - `canary_token: str | None` — 单任务独立 canary
+  - `output_filter: dict | None` — 单任务输出过滤规则覆盖
+  - `safety_version: int` — 灰度开关（旧版本 connector 忽略未知字段）
+  - 灰度 dial：`config/common.py::TASK_LEVEL_SAFETY_GRADUAL_ROLLOUT_PCT`
+- Connector 侧：3 个 adapter 都加单任务覆盖逻辑
+  - zylos-cutie：prompt-builder 已留 SYSTEM/AGENT/CANARY 顺序，扩起来最便宜
+  - OpenClaw / Hermes：现有 connector-core 把字段穿过 `callAgent(input)` 给 adapter
+- Server 侧 task.result 输出过滤继续按 register 期模板兜底，单任务 override 仅向上加
+
+**工期估计**：~1 周（server 2d + connector-core 0.2.0 envelope 字段透传 1d + 三 adapter 各 0.5d + 灰度集成 + 测试 2d）
+
+**owner**：等触发条件命中再排。Cutie 安全主线项，对 OpenClaw / Hermes 同样受益。
