@@ -70,10 +70,14 @@ zylos runner 自然产物是 `RunnerResult`（success | error_type）。core 当
 
 ---
 
-### B6 — task.timeout 当前硬编码 60s
+### B6 — task.timeout 当前硬编码 60s [partial fix 1.0.1]
 
 `runner.ts` 默认 60_000ms。Cutie Server `task.push.timeout_seconds` 实际下发的
 timeout 应该胜出。connector-core 的 task queue 应该把它穿过来给 adapter.callAgent。
+
+**1.0.1 partial fix**：加 `ZYLOS_TASK_TIMEOUT_MS` env override，KOL 可在 ecosystem
+`env: { ZYLOS_TASK_TIMEOUT_MS: '120000' }` 临时覆盖 default 60s。完整 server 透传
+要等 connector-core 0.2.0 把 callAgent 接 timeout 字段。
 
 ---
 
@@ -167,7 +171,13 @@ zylos-cutie 端 auto-upgrade fail 是 fail-safe（service 不死，KOL 看到 lo
 
 ---
 
-### B15 — 首次 task 1.16s RUNNER_FAILURE 冷启动现象（未根因定位）
+### B15 — 首次 task 1.16s RUNNER_FAILURE 冷启动现象 [permanent log added 1.0.1，根因仍未定位]
+
+✅ 1.0.1 完成永久 log：`runner.ts` 三个失败路径（spawn error / close 失败 / empty answer）
+均加 `log.error('runner ...', { stderr_tail, exit_code, elapsed_ms, prompt_len, chosen, ... })`。
+PM2 写到 `~/zylos/components/cutie/logs/error.log`，下次冷启动现象出现能直接捞 stderr 锁因。
+
+⚠️ 仍未定位的根因：
 
 **症状**：sysctl=0 + 凭据复制 + service restart 完成、sandbox detection=ok 后约 2 分钟，
 第一个真 task 来时 runner spawn 1.16 秒后 RUNNER_FAILURE，stderr 内容未保留。
@@ -195,12 +205,14 @@ pm2 restart 一次后第二批 task 完美 success。
 
 ## 复审遗留（review HIGH 修过但需要补单测覆盖）
 
-### B8 — runner.ts spawn 后路径单测（Review pr-test H1 + silent-failure H1-H3）
+### B8 — runner.ts spawn 后路径单测（Review pr-test H1 + silent-failure H1-H3）[done 1.0.1]
 
-修了 classifyFailure regex（HIGH-4 part 1）+ stdout 空 fallback 调 classifyFailure，
-但 mock spawn 的端到端单测没补——现有 `runner.fail-closed.test.ts` 只测 spawn 之前的
-guard（6 case）。需要新建 `runner.spawn-classification.test.ts` 用 vi.mock 拦 spawn，
-注入 stderr/stdout/code 各种组合（约 12-15 case），覆盖：
+✅ 1.0.1 完成：`tests/runner.spawn-classification.test.ts` 12 case + 1 timeout B6 case。
+覆盖 success / 401 unauthorized / loopback RTM_NEWADDR / API credits / valid subscription /
+command not found / permission denied / empty stdout + 401 / empty stdout dirty / fallthrough RUNNER_FAILURE / spawn error / SIGKILL timeout。
+71/71 测试全过。
+
+历史描述：
 
 - timeout 触发 → RUNNER_TIMEOUT
 - exit != 0 + stderr 含 "401 Unauthorized" → RUNNER_UNAVAILABLE
@@ -214,16 +226,13 @@ guard（6 case）。需要新建 `runner.spawn-classification.test.ts` 用 vi.mo
 
 **owner**：Phase 2 收尾前补；约 80 行，2-3 小时。
 
-### B9 — ZylosPlatformAdapter / api.register / connection 单测（Review pr-test H2）
+### B9 — ZylosPlatformAdapter / api.register / connection 单测（Review pr-test H2）[done 1.0.1]
 
-新建 `adapter.test.ts`：
-- attachConfig guard（callAgent 在 attachConfig 之前抛错）
-- callAgent 把 RunnerError → throw `Object.assign(new Error, { error_type, detail })` 包装路径
-- augmentHeartbeat 不加字段验证
-- getCapabilities 上报 'sandbox=srt' + 'runtime=...'
+✅ 1.0.1 完成：`tests/adapter.test.ts` 10 case + `tests/api.test.ts` 8 case。
+- adapter: id / attachConfig guard / callAgent success / callAgent error wrapping (SANDBOX_UNAVAILABLE + RUNNER_FAILURE) / augmentHeartbeat / getCapabilities (claude/codex/未配) / applySafetyTemplates
+- api.register: 必填字段组装 / deviceName 默认 / 显式 deviceName / capabilities 不传不发空数组 / capabilities 显式 / agentPlatform 锁死 'zylos' / register 返回值透传
 
-新建 `api.test.ts`：mock connector-core register（vi.mock @cutie-crypto/connector-core），
-验 RegisterParams 正确组装（platform=os.platform / agentPlatform='zylos' / capabilities optional）。
+71/71 测试全过。
 
 ### B10 — cutie-server `/v1/connector/register` 端点级集成测试（Review pr-test H3）
 

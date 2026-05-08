@@ -27,6 +27,7 @@ import {
 } from './paths.js';
 import { ErrorType, type RunnerResult } from './errors.js';
 import { extractCodexAnswer } from './codex-stdout-parser.js';
+import { log } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,7 +36,14 @@ const __dirname = path.dirname(__filename);
 const SRT_CLI = path.resolve(__dirname, '../node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js');
 const SRT_CLI_FALLBACK = path.resolve(__dirname, '../../node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js');
 
-const DEFAULT_TIMEOUT_MS = 60_000;
+// B6 partial fix：connector-core 0.1.0 的 callAgent(message, model) 没透传 task.push.timeout_seconds，
+// 暂时让 KOL 用 ZYLOS_TASK_TIMEOUT_MS env 覆盖默认 60s。core 0.2.0 改成接 timeout 字段后这条 env 可去掉。
+const DEFAULT_TIMEOUT_MS = (() => {
+  const raw = process.env['ZYLOS_TASK_TIMEOUT_MS'];
+  if (!raw) return 60_000;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
+})();
 
 export interface RunTaskInput {
   prompt: string;
@@ -152,6 +160,14 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      // B15: spawn error 路径写永久 log，避免 detail 被 connector-core 0.1.0 task.result 丢弃
+      // 后丢失 stderr 现场。冷启动 RUNNER_FAILURE 复盘只能靠 KOL 主机本地 logs。
+      log.error('runner spawn error', {
+        chosen,
+        cli_bin: cliBin,
+        spawn_err: String(err),
+        prompt_len: prompt.length,
+      });
       resolve({
         status: 'error',
         error_type: ErrorType.RUNNER_FAILURE,
@@ -171,6 +187,16 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
           // HIGH-4：exit=0 但 answer 解析后空——可能是 codex 拒答 / rate-limit / 凭据过期
           // 三类。优先看 stderr 信号给精细分类，不能笼统归 RUNNER_FAILURE。
           const errType = classifyFailure(stderr);
+          // B15: 同主失败路径——empty answer 也是失败现场，必须 log 出来定位根因。
+          log.error('runner empty answer', {
+            error_type: errType,
+            exit_code: code,
+            elapsed_ms: elapsed,
+            chosen,
+            prompt_len: prompt.length,
+            raw_stdout_bytes: stdout.length,
+            stderr_tail: stderr.slice(-512),
+          });
           return resolve({
             status: 'error',
             error_type: errType !== ErrorType.RUNNER_FAILURE ? errType : ErrorType.RUNNER_FAILURE,
@@ -191,6 +217,18 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
       }
       // 失败分类（exit != 0 或 stdout 完全空）
       const errType = classifyFailure(stderr);
+      // B15: 失败现场写永久 log。connector-core 0.1.0 把 task.result.detail 字段丢弃，
+      // server DB 只剩 error_type='openclaw_error' + error_message='zylos runner XXX' 笼统分类，
+      // 真 stderr 在这里不打就丢失。BACKLOG B15 的核心修复点。
+      log.error('runner failure', {
+        error_type: errType,
+        exit_code: code,
+        elapsed_ms: elapsed,
+        chosen,
+        prompt_len: prompt.length,
+        stderr_tail: stderr.slice(-512),
+        stdout_head: stdout.slice(0, 200),
+      });
       resolve({
         status: 'error',
         error_type: errType,
