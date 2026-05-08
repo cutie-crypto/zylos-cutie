@@ -6,3 +6,6 @@ dist/
 .env.local
 coverage/
 *.tsbuildinfo
+
+# 内部工作文档，不公开
+CLAUDE.md
