@@ -217,9 +217,9 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
       }
       // 失败分类（exit != 0 或 stdout 完全空）
       const errType = classifyFailure(stderr);
-      // B15: 失败现场写永久 log。connector-core 0.1.0 把 task.result.detail 字段丢弃，
-      // server DB 只剩 error_type='openclaw_error' + error_message='zylos runner XXX' 笼统分类，
-      // 真 stderr 在这里不打就丢失。BACKLOG B15 的核心修复点。
+      // B15: 失败现场写永久 log。connector-core 0.1.0 把 task.result.detail 字段丢弃；
+      // 0.3.0 起 server DB error_type 是真实分类（RUNNER_TIMEOUT 等）+ error_message='zylos
+      // runner XXX'，但 stderr 仍然不上 wire——在这里不打就丢失。BACKLOG B15 的核心修复点。
       log.error('runner failure', {
         error_type: errType,
         exit_code: code,

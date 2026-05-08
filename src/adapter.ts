@@ -122,8 +122,8 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
       };
     }
     // 0.2.0 B5：runner 失败转 envelope 而不是 throw + Object.assign。
-    // detail 被丢进 error_message（详见 connection.ts dispatcher 注释；server CHECK
-    // 约束当前只接受 'openclaw_error'，结构化字段都压进 error_message 前缀）。
+    // detail 被丢进 error_message（0.3.0 起 dispatcher 直接透传 envelope.error_type
+    // 到 wire，不再压平 'openclaw_error'，server 看到的就是 RUNNER_TIMEOUT 等真实分类）。
     const detailStr = typeof result.detail === 'string'
       ? `: ${result.detail}`
       : (result.detail ? `: ${JSON.stringify(result.detail).slice(0, 300)}` : '');
