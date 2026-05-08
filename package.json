@@ -41,6 +41,14 @@
   ],
   "author": "Cutie Team",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cutie-crypto/zylos-cutie.git"
+  },
+  "homepage": "https://github.com/cutie-crypto/zylos-cutie#readme",
+  "bugs": {
+    "url": "https://github.com/cutie-crypto/zylos-cutie/issues"
+  },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.50",
     "@cutie-crypto/connector-core": "^0.3.0",
