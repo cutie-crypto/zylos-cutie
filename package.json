@@ -1,6 +1,6 @@
 {
   "name": "@cutie-crypto/zylos-cutie",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Cutie KOL agent component for Zylos / COCO runtime — Claude / Codex CLI under SRT sandbox",
   "type": "module",
   "main": "dist/index.js",
@@ -22,7 +22,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "node --import tsx/esm scripts/smoke.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build && npm test"
   },
   "engines": {
     "node": ">=20"
