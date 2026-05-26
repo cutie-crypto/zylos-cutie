@@ -9,7 +9,7 @@
  *   5. 不依赖 systemd / PM2 进程管理（PM2 由 Zylos 外层守护）
  *   6. augmentHeartbeat: 不加任何字段（agent_status 是统一字段）
  *   7. README + 5-6 行 dummy adapter（在 README）
- *   8. getCapabilities: 上报 ['sandbox=srt', `runtime=${chosen}`]
+ *   8. getCapabilities: 上报 runtime 可承载 scene + ['sandbox=srt', `runtime=${chosen}`]
  */
 
 import fs from 'node:fs';
@@ -24,10 +24,15 @@ import {
   type TaskInput,
 } from '@cutie-crypto/connector-core';
 import { applySafetyTemplates as cacheTemplates } from './safety-templates.js';
-import { buildPrompt } from './prompt-builder.js';
+import { buildPrompt, type BuildPromptInput } from './prompt-builder.js';
 import { runTask } from './runner.js';
 import { ErrorType } from './errors.js';
 import { log } from './logger.js';
+
+type ZylosTaskInput = TaskInput & {
+  task_type?: string;
+  raw_payload?: Record<string, unknown>;
+};
 
 /**
  * zylos 自己的 ErrorType 枚举（src/errors.ts）比 connector-core 的
@@ -64,6 +69,13 @@ function mapZylosErrorType(zylosType: ErrorType): RunnerErrorEnvelope['error_typ
 const SELF_UPGRADE_TIMEOUT_MS = 5 * 60 * 1000;
 const STDOUT_FLUSH_TIMEOUT_MS = 2000;
 
+function inferTaskType(input: ZylosTaskInput): string {
+  if (input.task_type) return input.task_type;
+  if (input.scene === 'strategy_workbench') return 'strategy.draft';
+  if (input.scene === 'backtest_run') return 'strategy.backtest.run';
+  return 'chat.ask';
+}
+
 interface UpgradeExecResult {
   stdout: string;
   stderr: string;
@@ -98,14 +110,21 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     // input.model 来自 server task.payload.agent_model；当前 claude / codex CLI 不接受
     // 任意 model id 切换（claude code 用账户绑定的默认模型；codex 走 ~/.codex/config.toml），
     // 所以这里忽略，留作 P1 演进字段。
-    const prompt = buildPrompt({
+    const taskInput = input as ZylosTaskInput;
+    const promptInput: BuildPromptInput = {
       message: input.message,
-      // 0.2.0 B4：终于拿到真实 kol_user_id / caller_user_id / scene 而不是 'unknown'。
-      // prompt-builder 已经把这三个字段塞进 # CONTEXT 段；本次不需要改 prompt-builder。
+      task_type: inferTaskType(taskInput),
+      // 0.2.0 B4 + W2.1：透传真实 user / scene / route / scope 上下文，避免 zylos
+      // 版 connector 继续停留在 KOL-only prompt。
       kol_user_id: input.kol_user_id,
       caller_user_id: input.caller_user_id,
       scene: input.scene,
-    });
+    };
+    if (taskInput.runtime_id) promptInput.runtime_id = taskInput.runtime_id;
+    if (taskInput.target_profile) promptInput.target_profile = taskInput.target_profile;
+    if (taskInput.agent_route) promptInput.agent_route = taskInput.agent_route;
+    if (taskInput.scope) promptInput.scope = taskInput.scope;
+    const prompt = buildPrompt(promptInput);
     // 0.2.0 B6：runner timeout 用 server task.push 透传过来的 input.timeout_ms，
     // 不再走 ZYLOS_TASK_TIMEOUT_MS env override（已删）。dispatcher 在 wire 边界
     // clamp 过 0/NaN，runner 拿到的永远是有效正数。
@@ -178,7 +197,7 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
   }
 
   getCapabilities(): string[] {
-    const caps = ['sandbox=srt'];
+    const caps = ['strategy_workbench', 'kol_clone_chat', 'sandbox=srt'];
     if (this.cfg?.chosen_runtime) {
       caps.push(`runtime=${this.cfg.chosen_runtime}`);
     }

@@ -14,6 +14,7 @@ import { ErrorType } from '../src/errors.js';
  * 0.2.0 把整份 task envelope 透传给 adapter（之前只有 message + model）。
  */
 const VALID_INPUT: TaskInput = {
+  task_type: 'chat.ask',
   message: 'ping',
   model: 'cutie',
   kol_user_id: 'kol-1',
@@ -78,7 +79,7 @@ describe('ZylosPlatformAdapter', () => {
     });
   });
 
-  it('callAgent B4：buildPrompt 收到真实 kol_user_id / caller_user_id / scene（不再 hardcode "unknown"）', async () => {
+  it('callAgent W2.1：buildPrompt 收到真实 scene / route / scope 上下文', async () => {
     runTaskMock.mockResolvedValue({
       status: 'success',
       answer: 'ok',
@@ -92,13 +93,23 @@ describe('ZylosPlatformAdapter', () => {
       ...VALID_INPUT,
       kol_user_id: 'real-kol-id',
       caller_user_id: 'real-caller-id',
-      scene: 'kol_chat',
+      scene: 'strategy_workbench',
+      task_type: 'strategy.draft',
+      runtime_id: 'rt-9',
+      target_profile: 'cutie',
+      agent_route: 'zylos:cutie',
+      scope: ['read:market_data', 'write:draft_strategy'],
     });
     expect(buildPromptMock).toHaveBeenCalledWith({
       message: 'ping',
+      task_type: 'strategy.draft',
       kol_user_id: 'real-kol-id',
       caller_user_id: 'real-caller-id',
-      scene: 'kol_chat',
+      scene: 'strategy_workbench',
+      runtime_id: 'rt-9',
+      target_profile: 'cutie',
+      agent_route: 'zylos:cutie',
+      scope: ['read:market_data', 'write:draft_strategy'],
     });
   });
 
@@ -204,24 +215,34 @@ describe('ZylosPlatformAdapter', () => {
     expect(a.augmentHeartbeat({})).toEqual({});
   });
 
-  it('getCapabilities: claude → ["sandbox=srt", "runtime=claude"]', async () => {
+  it('getCapabilities: claude → scene capabilities + sandbox/runtime tags', async () => {
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
     a.attachConfig({ chosen_runtime: 'claude' });
-    expect(a.getCapabilities()).toEqual(['sandbox=srt', 'runtime=claude']);
+    expect(a.getCapabilities()).toEqual([
+      'strategy_workbench',
+      'kol_clone_chat',
+      'sandbox=srt',
+      'runtime=claude',
+    ]);
   });
 
-  it('getCapabilities: codex → ["sandbox=srt", "runtime=codex"]', async () => {
+  it('getCapabilities: codex → scene capabilities + sandbox/runtime tags', async () => {
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
     a.attachConfig({ chosen_runtime: 'codex' });
-    expect(a.getCapabilities()).toEqual(['sandbox=srt', 'runtime=codex']);
+    expect(a.getCapabilities()).toEqual([
+      'strategy_workbench',
+      'kol_clone_chat',
+      'sandbox=srt',
+      'runtime=codex',
+    ]);
   });
 
-  it('getCapabilities: 未 attachConfig → 仅 ["sandbox=srt"]（无 runtime 上报）', async () => {
+  it('getCapabilities: 未 attachConfig → scene capabilities + sandbox tag（无 runtime 上报）', async () => {
     const { ZylosPlatformAdapter } = await import('../src/adapter.js');
     const a = new ZylosPlatformAdapter();
-    expect(a.getCapabilities()).toEqual(['sandbox=srt']);
+    expect(a.getCapabilities()).toEqual(['strategy_workbench', 'kol_clone_chat', 'sandbox=srt']);
   });
 
   it('applySafetyTemplates 调 cacheTemplates 透传', async () => {

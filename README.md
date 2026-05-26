@@ -6,9 +6,9 @@
 ## What this is
 
 Cutie is a private-community platform for crypto KOLs. When a KOL's follower asks a
-question in the Cutie App, the question is forwarded to the KOL's own machine, where
-this Zylos component runs the KOL's self-trained Claude / Codex agent inside an OS
-sandbox and returns the answer through the Cutie Server.
+question or a user submits a Strategy Agent draft task in the Cutie App, the task is
+forwarded to the user's own machine, where this Zylos component runs Claude / Codex
+inside an OS sandbox and returns the answer through the Cutie Server.
 
 This component is the **Zylos runtime adapter** for the same Cutie Connector protocol
 that [`@cutie-crypto/connector`](https://www.npmjs.com/package/@cutie-crypto/connector)
@@ -142,7 +142,7 @@ git clone https://github.com/cutie-crypto/zylos-cutie.git
 cd zylos-cutie
 npm install
 npm run build
-npm test                  # 37+ unit tests, no external deps
+npm test                  # 87+ unit tests, no external deps
 npm run smoke             # end-to-end smoke (mock pair → SRT → real claude/codex CLI)
 ```
 
@@ -152,7 +152,7 @@ npm run smoke             # end-to-end smoke (mock pair → SRT → real claude/
 |---|---|---|
 | `SANDBOX_UNAVAILABLE` | bwrap / sandbox-exec missing, or AppArmor blocks userns | Install dependencies, or disable AppArmor restrict (Ubuntu 24.04+) |
 | `RUNNER_UNAVAILABLE` | no `claude` / `codex` in PATH | Install Claude Code or `npm i -g @openai/codex` |
-| `RUNNER_TIMEOUT` | AI provider slow or task too long | Default is 60s; override with `ZYLOS_TASK_TIMEOUT_MS` env var in your PM2 ecosystem |
+| `RUNNER_TIMEOUT` | AI provider slow or task too long | Timeout comes from Cutie Server `task.push.timeout_seconds`; retry after simplifying the task or raising the server-side task timeout |
 | service idle, never picks tasks | not paired | Run `cutie-pair <pair_token>` then `pm2 restart zylos-cutie` |
 
 ## Architecture

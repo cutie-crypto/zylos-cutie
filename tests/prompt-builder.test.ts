@@ -87,17 +87,27 @@ describe('buildPrompt', () => {
     expect(idxA).toBeLessThan(idxB);
   });
 
-  it('emits CONTEXT block with kol_user_id / caller_user_id / scene', () => {
+  it('emits CONTEXT block with W2.1 task routing fields', () => {
     applySafetyTemplates({ agents_md: 'A', soul_md: 'S' });
     const prompt = buildPrompt({
       message: 'q',
+      task_type: 'strategy.draft',
       kol_user_id: 'kol-9',
       caller_user_id: 'caller-7',
-      scene: 'forum_reply',
+      scene: 'strategy_workbench',
+      runtime_id: 'rt-1',
+      target_profile: 'cutie',
+      agent_route: 'zylos:cutie',
+      scope: ['read:market_data', 'write:draft_strategy'],
     });
+    expect(prompt).toContain('task_type=strategy.draft');
     expect(prompt).toContain('kol_user_id=kol-9');
     expect(prompt).toContain('caller_user_id=caller-7');
-    expect(prompt).toContain('scene=forum_reply');
+    expect(prompt).toContain('scene=strategy_workbench');
+    expect(prompt).toContain('runtime_id=rt-1');
+    expect(prompt).toContain('target_profile=cutie');
+    expect(prompt).toContain('agent_route=zylos:cutie');
+    expect(prompt).toContain('scope=["read:market_data","write:draft_strategy"]');
   });
 
   describe('knowledge digest mtime cache', () => {

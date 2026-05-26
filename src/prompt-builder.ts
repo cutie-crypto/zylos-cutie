@@ -16,9 +16,14 @@ import { KNOWLEDGE_DIR } from './paths.js';
 
 export interface BuildPromptInput {
   message: string;
+  task_type?: string;
   kol_user_id: string;
   caller_user_id?: string;
   scene?: string;
+  runtime_id?: string;
+  target_profile?: string;
+  agent_route?: string;
+  scope?: string[];
 }
 
 export interface BuildPromptOptions {
@@ -27,6 +32,10 @@ export interface BuildPromptOptions {
 }
 
 const DEFAULT_MAX_KNOWLEDGE_BYTES = 4096;
+
+function formatContextValue(value: string[] | undefined): string {
+  return JSON.stringify(value ?? []);
+}
 
 export function buildPrompt(
   input: BuildPromptInput,
@@ -66,9 +75,14 @@ export function buildPrompt(
   sections.push(
     [
       `# CONTEXT`,
+      `task_type=${input.task_type ?? 'chat.ask'}`,
       `kol_user_id=${input.kol_user_id}`,
       `caller_user_id=${input.caller_user_id ?? 'unknown'}`,
       `scene=${input.scene ?? 'app_kol_ask'}`,
+      `runtime_id=${input.runtime_id ?? 'unknown'}`,
+      `target_profile=${input.target_profile ?? 'cutie'}`,
+      `agent_route=${input.agent_route ?? 'zylos:cutie'}`,
+      `scope=${formatContextValue(input.scope)}`,
     ].join('\n'),
   );
   sections.push(`# USER\n${input.message.trim()}`);
