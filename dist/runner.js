@@ -1,0 +1,309 @@
+/**
+ * runner — 通过 SRT 沙箱包住 claude / codex CLI 跑 prompt 出 answer。
+ *
+ * 11-IMPL §13.3 + 13-SPIKE-RESULT §3.5/§3.6 / §6 fail-closed 矩阵：
+ *
+ *   - SRT / sandbox-exec / bwrap 不可用      → SANDBOX_UNAVAILABLE
+ *   - claude / codex CLI 不可用 / bin 缺失   → RUNNER_UNAVAILABLE
+ *   - timeout                                → RUNNER_TIMEOUT
+ *   - exit != 0 / spawn error / 其他         → RUNNER_FAILURE
+ *
+ * Codex 默认使用 COCO/Zylos 平台维护的 ~/.codex。只有显式 OPENAI_API_KEY /
+ * CODEX_API_KEY 场景才设置 CODEX_HOME=$DATA_DIR/codex-home。
+ * SRT 自身的 exit code 在 "沙箱内子命令找不到" 场景下不可信（spike §3.6），
+ * 所以这里在跑 SRT 之前先用 fs.existsSync 校验 binary 真实存在。
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import os from 'node:os';
+import { RUNTIME_DETECT_FILE, SANDBOX_DETECT_FILE, SRT_SETTINGS_FILE, CODEX_HOME, CODEX_HOME_STATUS_FILE, } from './paths.js';
+import { ErrorType } from './errors.js';
+import { extractCodexAnswer } from './codex-stdout-parser.js';
+import { log } from './logger.js';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// dist/runner.js → ../node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js
+// src/runner.ts (test 路径) 也通过 path.resolve 找回 node_modules
+const SRT_CLI = path.resolve(__dirname, '../node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js');
+const SRT_CLI_FALLBACK = path.resolve(__dirname, '../../node_modules/@anthropic-ai/sandbox-runtime/dist/cli.js');
+// 0.2.0 B6：connector-core 0.2.0 dispatcher 在 wire 边界 clamp 过 timeout_seconds 后透传过来，
+// adapter 必传 input.timeout_ms 给 runner。这里保留 60s default 仅给绕开 adapter 直接调
+// runTask 的单元测试 / 调试 harness 用——production 走 adapter 时 timeout_ms 永远是有效正数。
+// 之前的 ZYLOS_TASK_TIMEOUT_MS env override 已删——核心透传链路通了，env override 是冗余配置面。
+const DEFAULT_TIMEOUT_MS = 60_000;
+export async function runTask(input) {
+    const { prompt, runtime: forceRuntime, timeout_ms: timeoutMs } = input;
+    if (!prompt) {
+        return { status: 'error', error_type: ErrorType.CONFIG_INVALID, detail: 'prompt required' };
+    }
+    // (1) sandbox detect 必须 ok
+    const sb = readJsonOrNull(SANDBOX_DETECT_FILE);
+    if (!sb || sb['status'] !== 'ok') {
+        return { status: 'error', error_type: ErrorType.SANDBOX_UNAVAILABLE, detail: sb };
+    }
+    // (2) runtime detect 必须 ok 且 chosen bin 实存
+    const rt = readJsonOrNull(RUNTIME_DETECT_FILE);
+    if (!rt || rt['status'] !== 'ok') {
+        return { status: 'error', error_type: ErrorType.RUNNER_UNAVAILABLE, detail: rt };
+    }
+    const chosen = (forceRuntime ?? rt['chosen']);
+    if (chosen !== 'claude' && chosen !== 'codex') {
+        return {
+            status: 'error',
+            error_type: ErrorType.RUNNER_UNAVAILABLE,
+            detail: { reason: 'no runtime chosen', rt },
+        };
+    }
+    const cliBinRaw = chosen === 'claude' ? rt['claude_bin'] : rt['codex_bin'];
+    const cliBin = typeof cliBinRaw === 'string' ? cliBinRaw : null;
+    if (!cliBin || !fs.existsSync(cliBin)) {
+        return {
+            status: 'error',
+            error_type: ErrorType.RUNNER_UNAVAILABLE,
+            detail: { chosen, cliBin },
+        };
+    }
+    // (3) SRT CLI 必须可加载
+    const srtCli = fs.existsSync(SRT_CLI) ? SRT_CLI : (fs.existsSync(SRT_CLI_FALLBACK) ? SRT_CLI_FALLBACK : null);
+    if (!srtCli) {
+        return {
+            status: 'error',
+            error_type: ErrorType.SANDBOX_UNAVAILABLE,
+            detail: { reason: 'srt cli missing', tried: [SRT_CLI, SRT_CLI_FALLBACK] },
+        };
+    }
+    // (4) srt-settings.json 必须存在 + 通过最小校验
+    // HIGH-12（codex CX2）：仅检查存在不够——KOL 删空 denyRead / 加 `*` 到 allowedDomains 后
+    // runner 仍跑，README 承诺的 sandbox 边界被 KOL 自己破坏 service 不知道。所以 load 后
+    // 校验关键字段：denyRead 必含主目录敏感路径子集；allowedDomains 必为非空数组每项是 host 形式。
+    const srtCheck = validateSrtSettings(SRT_SETTINGS_FILE);
+    if (srtCheck.ok === false) {
+        return {
+            status: 'error',
+            error_type: ErrorType.SANDBOX_UNAVAILABLE,
+            detail: { reason: srtCheck.reason, file: SRT_SETTINGS_FILE },
+        };
+    }
+    let useIsolatedCodexHome = false;
+    // (4.5) codex 路径额外校验 credential 模式是否就绪。默认 COCO/Zylos
+    // 托管路径使用平台维护的真实 ~/.codex；只有 OPENAI_API_KEY/CODEX_API_KEY
+    // 可选路径才写隔离 CODEX_HOME。失败时 srt-settings.ts 写 status unavailable。
+    if (chosen === 'codex') {
+        const codexStatus = readJsonOrNull(CODEX_HOME_STATUS_FILE);
+        if (codexStatus !== null && codexStatus['status'] !== 'ok') {
+            return {
+                status: 'error',
+                error_type: ErrorType.RUNNER_UNAVAILABLE,
+                detail: { reason: 'codex-home not ready', codex_home_status: codexStatus },
+            };
+        }
+        useIsolatedCodexHome = codexStatus?.['source'] === 'env_api_key';
+    }
+    // (5) spawn
+    const cliArgs = chosen === 'claude'
+        ? [cliBin, '-p', prompt]
+        : [
+            cliBin, 'exec',
+            '--ephemeral',
+            '--skip-git-repo-check',
+            '--dangerously-bypass-approvals-and-sandbox',
+            prompt,
+        ];
+    const spawnEnv = { ...process.env };
+    if (chosen === 'codex' && useIsolatedCodexHome) {
+        // 用户自带 API key / 未来 env broker 路径：让 codex 使用组件隔离 CODEX_HOME。
+        // COCO 托管默认路径不设置 CODEX_HOME，交给 CLI 使用平台维护的 ~/.codex。
+        spawnEnv['CODEX_HOME'] = CODEX_HOME;
+    }
+    const t0 = Date.now();
+    return new Promise((resolve) => {
+        const child = spawn('node', [srtCli, '--settings', SRT_SETTINGS_FILE, ...cliArgs], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: spawnEnv,
+        });
+        let stdout = '';
+        let stderr = '';
+        let timedOut = false;
+        const timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGKILL');
+        }, timeoutMs ?? DEFAULT_TIMEOUT_MS);
+        child.stdout.on('data', (d) => { stdout += d.toString(); });
+        child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.on('error', (err) => {
+            clearTimeout(timer);
+            // B15: spawn error 路径写永久 log，避免 detail 被 connector-core 0.1.0 task.result 丢弃
+            // 后丢失 stderr 现场。冷启动 RUNNER_FAILURE 复盘只能靠 KOL 主机本地 logs。
+            log.error('runner spawn error', {
+                chosen,
+                cli_bin: cliBin,
+                spawn_err: String(err),
+                prompt_len: prompt.length,
+            });
+            resolve({
+                status: 'error',
+                error_type: ErrorType.RUNNER_FAILURE,
+                detail: String(err),
+            });
+        });
+        child.on('close', (code) => {
+            clearTimeout(timer);
+            const elapsed = Date.now() - t0;
+            if (timedOut) {
+                return resolve({ status: 'error', error_type: ErrorType.RUNNER_TIMEOUT, elapsed_ms: elapsed });
+            }
+            if (code === 0 && stdout.length > 0) {
+                const answer = chosen === 'codex' ? extractCodexAnswer(stdout) : stdout.trim();
+                if (!answer) {
+                    // HIGH-4：exit=0 但 answer 解析后空——可能是 codex 拒答 / rate-limit / 凭据过期
+                    // 三类。优先看 stderr 信号给精细分类，不能笼统归 RUNNER_FAILURE。
+                    const errType = classifyFailure(stderr);
+                    // B15: 同主失败路径——empty answer 也是失败现场，必须 log 出来定位根因。
+                    log.error('runner empty answer', {
+                        error_type: errType,
+                        exit_code: code,
+                        elapsed_ms: elapsed,
+                        chosen,
+                        prompt_len: prompt.length,
+                        raw_stdout_bytes: stdout.length,
+                        stderr_tail: stderr.slice(-512),
+                    });
+                    return resolve({
+                        status: 'error',
+                        error_type: errType !== ErrorType.RUNNER_FAILURE ? errType : ErrorType.RUNNER_FAILURE,
+                        elapsed_ms: elapsed,
+                        detail: {
+                            reason: 'empty answer after parse',
+                            raw_stdout_bytes: stdout.length,
+                            stderr_tail: stderr.slice(-512),
+                        },
+                    });
+                }
+                return resolve({
+                    status: 'success',
+                    answer,
+                    elapsed_ms: elapsed,
+                    raw_stdout_bytes: stdout.length,
+                });
+            }
+            // 失败分类（exit != 0 或 stdout 完全空）
+            const errType = classifyFailure(stderr);
+            // B15: 失败现场写永久 log。connector-core 0.1.0 把 task.result.detail 字段丢弃；
+            // 0.3.0 起 server DB error_type 是真实分类（RUNNER_TIMEOUT 等）+ error_message='zylos
+            // runner XXX'，但 stderr 仍然不上 wire——在这里不打就丢失。BACKLOG B15 的核心修复点。
+            log.error('runner failure', {
+                error_type: errType,
+                exit_code: code,
+                elapsed_ms: elapsed,
+                chosen,
+                prompt_len: prompt.length,
+                stderr_tail: stderr.slice(-512),
+                stdout_head: stdout.slice(0, 200),
+            });
+            resolve({
+                status: 'error',
+                error_type: errType,
+                ...(code !== null && { exit_code: code }),
+                elapsed_ms: elapsed,
+                detail: (stderr || stdout).slice(-1024),
+            });
+        });
+    });
+}
+/**
+ * HIGH-4 修复：补全 stderr 模式覆盖。Review silent-failure H3 列出当前漏的关键模式。
+ *
+ * 优先级：SANDBOX_UNAVAILABLE > RUNNER_UNAVAILABLE > RUNNER_FAILURE。
+ * 同一 stderr 命中多条时保留最严重的归类。
+ */
+export function classifyFailure(stderr) {
+    const s = stderr || '';
+    // SRT / bwrap / sandbox-exec 自身问题
+    if (/Sandbox dependencies not available/i.test(s))
+        return ErrorType.SANDBOX_UNAVAILABLE;
+    if (/Operation not permitted/i.test(s))
+        return ErrorType.SANDBOX_UNAVAILABLE;
+    // bwrap 在 AppArmor restrict_unprivileged_userns=1 时的真实标志（spike 在 Ubuntu 24.04 实测）
+    if (/loopback:\s+Failed RTM_NEWADDR/i.test(s))
+        return ErrorType.SANDBOX_UNAVAILABLE;
+    if (/clone3|unshare\s+CLONE_NEWUSER|user\s+namespace/i.test(s))
+        return ErrorType.SANDBOX_UNAVAILABLE;
+    // sandbox-exec 拒绝（macOS 路径有时返回这个）
+    if (/sandbox-exec:.*deny/i.test(s))
+        return ErrorType.SANDBOX_UNAVAILABLE;
+    // CLI 不存在 / 凭据 / 配额
+    if (/command not found/i.test(s))
+        return ErrorType.RUNNER_UNAVAILABLE;
+    if (/not authenticated|please run.+login|please log[- ]in/i.test(s))
+        return ErrorType.RUNNER_UNAVAILABLE;
+    // Anthropic API 凭据 / 配额过期
+    if (/401\s+Unauthorized|invalid_api_key|authentication[_ ]error/i.test(s))
+        return ErrorType.RUNNER_UNAVAILABLE;
+    if (/API credits exhausted|quota exceeded|rate[_ ]limit/i.test(s))
+        return ErrorType.RUNNER_UNAVAILABLE;
+    if (/valid subscription/i.test(s))
+        return ErrorType.RUNNER_UNAVAILABLE;
+    // 通用权限问题：大部分情况是 SRT 的 fs deny，归 SANDBOX_UNAVAILABLE 不归 RUNNER_FAILURE
+    if (/permission denied/i.test(s))
+        return ErrorType.SANDBOX_UNAVAILABLE;
+    return ErrorType.RUNNER_FAILURE;
+}
+/**
+ * HIGH-12 修复：检查 srt-settings.json 仍包含 README 承诺的关键安全字段。
+ * 这不是完整 schema 校验（review TYPE-H5 / BACKLOG 列了用上游 SandboxRuntimeConfigSchema），
+ * 是 minimum guard：denyRead 至少含主目录敏感路径，allowedDomains 必为非空数组、不允许 `*`。
+ */
+export function validateSrtSettings(filePath) {
+    if (!fs.existsSync(filePath)) {
+        return { ok: false, reason: 'srt-settings.json missing' };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+    catch (err) {
+        return { ok: false, reason: `srt-settings.json invalid JSON: ${err.message}` };
+    }
+    const settings = parsed;
+    const allowedDomains = settings?.network?.allowedDomains;
+    if (!Array.isArray(allowedDomains) || allowedDomains.length === 0) {
+        return { ok: false, reason: 'network.allowedDomains must be non-empty string[]' };
+    }
+    for (const d of allowedDomains) {
+        if (typeof d !== 'string') {
+            return { ok: false, reason: 'network.allowedDomains contains non-string entry' };
+        }
+        if (d === '*' || d === '0.0.0.0/0' || d.includes('*')) {
+            return { ok: false, reason: `network.allowedDomains contains wildcard "${d}" (security degradation)` };
+        }
+    }
+    const denyRead = settings?.filesystem?.denyRead;
+    if (!Array.isArray(denyRead)) {
+        return { ok: false, reason: 'filesystem.denyRead must be string[]' };
+    }
+    // 关键敏感路径必须 deny
+    const HOME = os.homedir();
+    const requiredDeny = [
+        `${HOME}/.ssh`,
+        `${HOME}/zylos/memory`,
+        `${HOME}/.zylos`,
+    ];
+    const denyReadStrings = denyRead.filter((x) => typeof x === 'string');
+    for (const must of requiredDeny) {
+        if (!denyReadStrings.some(d => d === must)) {
+            return { ok: false, reason: `filesystem.denyRead missing required path: ${must}` };
+        }
+    }
+    return { ok: true };
+}
+function readJsonOrNull(p) {
+    try {
+        return JSON.parse(fs.readFileSync(p, 'utf8'));
+    }
+    catch {
+        return null;
+    }
+}
+//# sourceMappingURL=runner.js.map
