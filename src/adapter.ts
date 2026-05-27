@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   type CorePlatformAdapter,
   type SafetyTemplates,
@@ -68,6 +69,7 @@ function mapZylosErrorType(zylosType: ErrorType): RunnerErrorEnvelope['error_typ
 
 const SELF_UPGRADE_TIMEOUT_MS = 5 * 60 * 1000;
 const STDOUT_FLUSH_TIMEOUT_MS = 2000;
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 function inferTaskType(input: ZylosTaskInput): string {
   if (input.task_type) return input.task_type;
@@ -185,17 +187,19 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     log.info('selfUpgrade started', { target_version: targetVersion, method });
 
     if (usesZylosLifecycle) {
-    const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
+      const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
       const installedVersion = readInstalledVersion();
       log.info('selfUpgrade completed via zylos CLI', {
         target_version: targetVersion,
-        installed_version: installedVersion,
+        installed_package_version: installedVersion.packageVersion,
+        installed_dist_version: installedVersion.distVersion,
         elapsed_ms: result.elapsed_ms,
         stdout_tail: result.stdout.slice(-512),
       });
-      if (installedVersion && installedVersion !== targetVersion) {
+      if (installedVersion.packageVersion !== targetVersion || installedVersion.distVersion !== targetVersion) {
         throw new Error(
-          `zylos upgrade exited 0 but version is ${installedVersion}, expected ${targetVersion}`,
+          `zylos upgrade exited 0 but disk versions are package=${installedVersion.packageVersion ?? 'unknown'} `
+          + `dist=${installedVersion.distVersion ?? 'unknown'}, expected ${targetVersion}`,
         );
       }
       return;
@@ -292,16 +296,29 @@ async function flushStdout(): Promise<void> {
   });
 }
 
-/** 读取磁盘上的 package.json version（zylos upgrade 后磁盘已更新但内存还是旧的）。 */
-function readInstalledVersion(): string | null {
+/** 读取磁盘上的 package.json / dist version（zylos upgrade 后磁盘已更新但内存还是旧的）。 */
+function readInstalledVersion(): { packageVersion: string | null; distVersion: string | null } {
+  let packageVersion: string | null = null;
+  let distVersion: string | null = null;
+
   try {
-    const pkgPath = path.resolve(__dirname, '..', 'package.json');
+    const pkgPath = path.resolve(MODULE_DIR, '..', 'package.json');
     const raw = fs.readFileSync(pkgPath, 'utf8');
     const pkg = JSON.parse(raw) as { version?: string };
-    return pkg.version ?? null;
+    packageVersion = pkg.version ?? null;
   } catch {
-    return null;
+    // fall through; caller logs unknown
   }
+
+  try {
+    const versionPath = path.resolve(MODULE_DIR, 'version.js');
+    const raw = fs.readFileSync(versionPath, 'utf8');
+    distVersion = raw.match(/COMPONENT_VERSION\s*=\s*['"]([^'"]+)['"]/)?.[1] ?? null;
+  } catch {
+    // fall through; caller logs unknown
+  }
+
+  return { packageVersion, distVersion };
 }
 
 /** Exported for unit tests; production code should not call directly. */
