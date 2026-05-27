@@ -310,6 +310,26 @@ describe('ZylosPlatformAdapter', () => {
     });
   });
 
+  describe('buildSelfUpgradeCommand — 自升级命令', () => {
+    it('zylos lifecycle 路径使用非交互确认式升级', async () => {
+      const { buildSelfUpgradeCommand } = await import('../src/adapter.js');
+      expect(buildSelfUpgradeCommand(true, '2.3.2')).toEqual({
+        command: 'zylos',
+        args: ['upgrade', 'cutie', '--yes', '--skip-eval', '--json'],
+        method: 'zylos-cli',
+      });
+    });
+
+    it('npm-global 路径固定安装 server 下发的目标版本', async () => {
+      const { buildSelfUpgradeCommand } = await import('../src/adapter.js');
+      expect(buildSelfUpgradeCommand(false, '2.3.2')).toEqual({
+        command: 'npm',
+        args: ['install', '-g', '@cutie-crypto/zylos-cutie@2.3.2'],
+        method: 'npm-global',
+      });
+    });
+  });
+
   describe('isZylosManagedComponent — selfUpgrade 路径检测', () => {
     let tmpHome: string;
     let originalHome: string | undefined;

@@ -82,6 +82,30 @@ interface UpgradeExecResult {
   elapsed_ms: number;
 }
 
+interface SelfUpgradeCommand {
+  command: string;
+  args: string[];
+  method: 'zylos-cli' | 'npm-global';
+}
+
+/** Exported for unit tests; production code should not call directly. */
+export function buildSelfUpgradeCommand(usesZylosLifecycle: boolean, targetVersion: string): SelfUpgradeCommand {
+  if (usesZylosLifecycle) {
+    return {
+      command: 'zylos',
+      // Server-triggered self-upgrade runs under PM2, so it must not wait for interactive confirmation.
+      args: ['upgrade', 'cutie', '--yes', '--skip-eval', '--json'],
+      method: 'zylos-cli',
+    };
+  }
+
+  return {
+    command: 'npm',
+    args: ['install', '-g', `@cutie-crypto/zylos-cutie@${targetVersion}`],
+    method: 'npm-global',
+  };
+}
+
 export interface ZylosAdapterConfig {
   /** runtime 选定结果（'claude' | 'codex'），由 src/index.ts 探测后注入 */
   chosen_runtime: 'claude' | 'codex';
@@ -162,11 +186,12 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     //     `npm install -g @cutie-crypto/zylos-cutie@<targetVersion>` + `process.exit(0)` 让 PM2 自动重启。
     // 检测方式：读 ~/zylos/.zylos/components.json 看 cutie 是否注册。
     const usesZylosLifecycle = isZylosManagedComponent('cutie');
-    const method = usesZylosLifecycle ? 'zylos-cli' : 'npm-global';
+    const upgrade = buildSelfUpgradeCommand(usesZylosLifecycle, targetVersion);
+    const method = upgrade.method;
     log.info('selfUpgrade started', { target_version: targetVersion, method });
 
     if (usesZylosLifecycle) {
-      const result = await runUpgradeCommand('zylos', ['upgrade', 'cutie'], targetVersion, method);
+      const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
       log.info('selfUpgrade completed via zylos CLI', {
         target_version: targetVersion,
         elapsed_ms: result.elapsed_ms,
@@ -176,12 +201,7 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     }
 
     // npm-global 路径：直接 install 全局包后 process.exit，PM2 watchdog 会拉起新 process 加载新代码。
-    const result = await runUpgradeCommand(
-      'npm',
-      ['install', '-g', `@cutie-crypto/zylos-cutie@${targetVersion}`],
-      targetVersion,
-      method,
-    );
+    const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
     log.info('selfUpgrade completed via npm install -g; exiting for PM2 restart', {
       target_version: targetVersion,
       elapsed_ms: result.elapsed_ms,
