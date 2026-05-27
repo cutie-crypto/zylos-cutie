@@ -100,7 +100,12 @@ prompt carrier.
   `~/zylos/memory` (Zylos main agent's memory), `~/.zylos` (other components' tokens).
 - **Writes allowed**: cwd, `/tmp`, component `state/`, and (codex only) the isolated
   `state/codex-home/` — the KOL's main `~/.codex` is never written to.
-- **Network**: only Anthropic / OpenAI API + OAuth domains. Everything else gets `403`.
+- **Codex credentials**: managed Coco/Zylos deployments should inject `OPENAI_API_KEY`
+  or `CODEX_API_KEY`. Standalone installs may fall back to copying local `~/.codex`
+  auth into the isolated component home.
+- **Network**: only Anthropic / OpenAI API + OAuth domains, plus the configured
+  `OPENAI_BASE_URL` / `CODEX_BASE_URL` host for managed Codex runtimes. Everything
+  else gets `403`.
 - **No web tools, no shell, no code execution.** Disabled by CLI args + denied by SRT
   network allowlist.
 
@@ -111,6 +116,8 @@ The sandbox boundary is locked in by an internal spike report.
 | Env | Default | Effect |
 |---|---|---|
 | `CUTIE_RUNTIME` | (auto) | Force `claude` or `codex`. Default tries `~/.zylos/config.json` `runtime` field, then PATH order. |
+| `OPENAI_API_KEY` / `CODEX_API_KEY` | unset | Managed Codex credential source. When present, zylos-cutie writes an isolated `state/codex-home/auth.json` from this value instead of using local `~/.codex` OAuth state. |
+| `OPENAI_BASE_URL` / `CODEX_BASE_URL` | unset | Managed Codex API base URL. Its host is added to the SRT network allowlist. |
 | `CUTIE_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
 `config.json` lives at `~/zylos/components/cutie/config.json`. KOL can edit
@@ -151,7 +158,7 @@ npm run smoke             # end-to-end smoke (mock pair → SRT → real claude/
 | Error | Cause | Fix |
 |---|---|---|
 | `SANDBOX_UNAVAILABLE` | bwrap / sandbox-exec missing, or AppArmor blocks userns | Install dependencies, or disable AppArmor restrict (Ubuntu 24.04+) |
-| `RUNNER_UNAVAILABLE` | no `claude` / `codex` in PATH | Install Claude Code or `npm i -g @openai/codex` |
+| `RUNNER_UNAVAILABLE` | no `claude` / `codex` in PATH, or selected runtime credentials unavailable | Install the selected CLI; for Coco-managed Codex, ensure `OPENAI_API_KEY`/`CODEX_API_KEY` and optional base URL are present in the PM2 environment |
 | `RUNNER_TIMEOUT` | AI provider slow or task too long | Timeout comes from Cutie Server `task.push.timeout_seconds`; retry after simplifying the task or raising the server-side task timeout |
 | service idle, never picks tasks | not paired | Run `cutie-pair <pair_token>` then `pm2 restart zylos-cutie` |
 

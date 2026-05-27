@@ -111,8 +111,9 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
     };
   }
 
-  // (4.5) codex 路径额外校验 CODEX_HOME 是否就绪。HIGH-7：ensureCodexHome 复制 auth.json
-  // 失败时 srt-settings.ts 写 codex-home-status.json 标 unavailable，runner 这里读它。
+  // (4.5) codex 路径额外校验 CODEX_HOME 是否就绪。ensureCodexHome 优先写入
+  // Coco/Zylos 托管凭据，standalone 模式才复制本机 auth.json；失败时
+  // srt-settings.ts 写 codex-home-status.json 标 unavailable，runner 这里读它。
   if (chosen === 'codex') {
     const codexStatus = readJsonOrNull(CODEX_HOME_STATUS_FILE);
     if (codexStatus !== null && codexStatus['status'] !== 'ok') {
