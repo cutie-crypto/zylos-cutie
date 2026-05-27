@@ -10,4 +10,11 @@ describe('COMPONENT_VERSION', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(here, '..', 'package.json'), 'utf8')) as { version: string };
     expect(COMPONENT_VERSION).toBe(pkg.version);
   });
+
+  it('matches SKILL.md frontmatter version', () => {
+    const here = path.dirname(url.fileURLToPath(import.meta.url));
+    const skill = fs.readFileSync(path.join(here, '..', 'SKILL.md'), 'utf8');
+    const match = skill.match(/^version:\s*([^\s]+)\s*$/m);
+    expect(match?.[1]).toBe(COMPONENT_VERSION);
+  });
 });
