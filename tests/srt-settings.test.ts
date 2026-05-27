@@ -9,6 +9,7 @@ import {
 import { buildDefaultSrtSettings, ensureCodexHome } from '../src/srt-settings.js';
 
 const ORIGINAL_ENV = {
+  HOME: process.env['HOME'],
   OPENAI_API_KEY: process.env['OPENAI_API_KEY'],
   CODEX_API_KEY: process.env['CODEX_API_KEY'],
   OPENAI_BASE_URL: process.env['OPENAI_BASE_URL'],
@@ -40,7 +41,7 @@ describe('srt settings', () => {
     expect(settings.network.allowedDomains).toContain('coco-runtime.example.com');
   });
 
-  it('writes managed Codex credentials into isolated CODEX_HOME', () => {
+  it('writes explicit env API key credentials into isolated CODEX_HOME', () => {
     process.env['OPENAI_API_KEY'] = 'sk-managed-test';
     process.env['OPENAI_BASE_URL'] = 'https://coco-runtime.example.com/v1';
     fs.mkdirSync(CODEX_HOME, { recursive: true });
@@ -56,6 +57,43 @@ describe('srt settings', () => {
     const status = JSON.parse(fs.readFileSync(CODEX_HOME_STATUS_FILE, 'utf8'));
     expect(auth).toEqual({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-managed-test' });
     expect(config).toContain('openai_base_url = "https://coco-runtime.example.com/v1"');
-    expect(status).toMatchObject({ status: 'ok', source: 'managed_env', has_base_url: true });
+    expect(status).toMatchObject({ status: 'ok', source: 'env_api_key', has_base_url: true });
+  });
+
+  it('allows platform-managed ~/.codex writes when no env API key is configured', () => {
+    const home = path.join(STATE_DIR, 'fake-home');
+    process.env['HOME'] = home;
+
+    const settings = buildDefaultSrtSettings('codex');
+
+    expect(settings.filesystem.allowWrite).toContain(path.join(home, '.codex'));
+    expect(settings.filesystem.allowWrite).not.toContain(CODEX_HOME);
+    expect(settings.filesystem.denyWrite).not.toContain(path.join(home, '.codex'));
+  });
+
+  it('uses platform-managed ~/.codex without copying auth into CODEX_HOME', () => {
+    const home = path.join(STATE_DIR, 'fake-home');
+    process.env['HOME'] = home;
+    const realCodexHome = path.join(home, '.codex');
+    fs.mkdirSync(realCodexHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(realCodexHome, 'auth.json'),
+      JSON.stringify({ auth_mode: 'chatgpt', tokens: { refresh_token: 'platform' } }, null, 2),
+    );
+    fs.mkdirSync(CODEX_HOME, { recursive: true });
+    fs.writeFileSync(path.join(CODEX_HOME, 'auth.json'), '{"stale":true}');
+    fs.writeFileSync(path.join(CODEX_HOME, 'config.toml'), 'stale = true\n');
+
+    ensureCodexHome(null, process.execPath);
+
+    const status = JSON.parse(fs.readFileSync(CODEX_HOME_STATUS_FILE, 'utf8'));
+    expect(status).toMatchObject({
+      status: 'ok',
+      source: 'platform_codex_home',
+      codex_home: realCodexHome,
+    });
+    expect(fs.existsSync(path.join(CODEX_HOME, 'auth.json'))).toBe(false);
+    expect(fs.existsSync(path.join(CODEX_HOME, 'config.toml'))).toBe(false);
+    expect(fs.existsSync(path.join(realCodexHome, 'auth.json'))).toBe(true);
   });
 });

@@ -40,7 +40,7 @@ export const RUNTIME_DETECT_FILE = path.join(STATE_DIR, 'runtime.json');
 export const SANDBOX_DETECT_FILE = path.join(STATE_DIR, 'sandbox.json');
 export const SAFETY_TEMPLATES_FILE = path.join(STATE_DIR, 'safety-templates.json');
 export const SRT_SETTINGS_FILE = path.join(STATE_DIR, 'srt-settings.json');
-/** CODEX_HOME 隔离目录（生产路径；不要污染 KOL 主 ~/.codex）*/
+/** 可选 CODEX_HOME 隔离目录（仅显式 OPENAI_API_KEY / CODEX_API_KEY 路径使用） */
 export const CODEX_HOME = path.join(STATE_DIR, 'codex-home');
-/** ensureCodexHome 失败 / unavailable 时写在这——runner 启动前读决定要不要 fail closed（HIGH-7）*/
+/** ensureCodexHome 写凭据模式 / unavailable 原因；runner 启动前读决定要不要 fail closed */
 export const CODEX_HOME_STATUS_FILE = path.join(STATE_DIR, 'codex-home-status.json');

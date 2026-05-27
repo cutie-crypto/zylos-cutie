@@ -98,11 +98,14 @@ prompt carrier.
 
 - **Reads denied** (in default `srt-settings.json`): `~/.ssh`, `~/.aws`, `~/.gnupg`,
   `~/zylos/memory` (Zylos main agent's memory), `~/.zylos` (other components' tokens).
-- **Writes allowed**: cwd, `/tmp`, component `state/`, and (codex only) the isolated
-  `state/codex-home/` — the KOL's main `~/.codex` is never written to.
-- **Codex credentials**: managed Coco/Zylos deployments should inject `OPENAI_API_KEY`
-  or `CODEX_API_KEY`. Standalone installs may fall back to copying local `~/.codex`
-  auth into the isolated component home.
+- **Writes allowed**: cwd, `/tmp`, component `state/`, and Codex credential/session
+  storage. By default on Coco/Zylos, Codex uses the platform-managed `~/.codex`
+  in place. When an explicit API key env is configured, Codex uses isolated
+  `state/codex-home/` instead.
+- **Codex credentials**: managed Coco/Zylos deployments use the platform-maintained
+  `~/.codex/auth.json` via the Codex CLI. zylos-cutie does not read, copy, refresh,
+  or maintain a separate auth token. `OPENAI_API_KEY` / `CODEX_API_KEY` remains an
+  optional user-provided or future platform-env path.
 - **Network**: only Anthropic / OpenAI API + OAuth domains, plus the configured
   `OPENAI_BASE_URL` / `CODEX_BASE_URL` host for managed Codex runtimes. Everything
   else gets `403`.
@@ -116,8 +119,8 @@ The sandbox boundary is locked in by an internal spike report.
 | Env | Default | Effect |
 |---|---|---|
 | `CUTIE_RUNTIME` | (auto) | Force `claude` or `codex`. Default tries `~/.zylos/config.json` `runtime` field, then PATH order. |
-| `OPENAI_API_KEY` / `CODEX_API_KEY` | unset | Managed Codex credential source. When present, zylos-cutie writes an isolated `state/codex-home/auth.json` from this value instead of using local `~/.codex` OAuth state. |
-| `OPENAI_BASE_URL` / `CODEX_BASE_URL` | unset | Managed Codex API base URL. Its host is added to the SRT network allowlist. |
+| `OPENAI_API_KEY` / `CODEX_API_KEY` | unset | Optional explicit API key source. When present, zylos-cutie writes an isolated `state/codex-home/auth.json`; when absent, Coco/Zylos Codex uses platform-managed `~/.codex` directly. |
+| `OPENAI_BASE_URL` / `CODEX_BASE_URL` | unset | Optional Codex API base URL for the explicit API key path. Its host is added to the SRT network allowlist. |
 | `CUTIE_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 
 `config.json` lives at `~/zylos/components/cutie/config.json`. KOL can edit
@@ -136,7 +139,7 @@ The sandbox boundary is locked in by an internal spike report.
     ├── sandbox.json              # platform / bwrap or sandbox-exec / AppArmor status
     ├── safety-templates.json     # mode 0600; cached agents_md / soul_md / canary_token
     ├── srt-settings.json         # SRT allowed/denied domains and paths
-    └── codex-home/               # CODEX_HOME isolation (only if runtime=codex)
+    └── codex-home/               # optional CODEX_HOME isolation for explicit API key env
         ├── auth.json
         ├── config.toml
         └── sessions/
@@ -158,7 +161,7 @@ npm run smoke             # end-to-end smoke (mock pair → SRT → real claude/
 | Error | Cause | Fix |
 |---|---|---|
 | `SANDBOX_UNAVAILABLE` | bwrap / sandbox-exec missing, or AppArmor blocks userns | Install dependencies, or disable AppArmor restrict (Ubuntu 24.04+) |
-| `RUNNER_UNAVAILABLE` | no `claude` / `codex` in PATH, or selected runtime credentials unavailable | Install the selected CLI; for Coco-managed Codex, ensure `OPENAI_API_KEY`/`CODEX_API_KEY` and optional base URL are present in the PM2 environment |
+| `RUNNER_UNAVAILABLE` | no `claude` / `codex` in PATH, or selected runtime credentials unavailable | Install the selected CLI; for Coco-managed Codex, ensure platform-managed `~/.codex/auth.json` exists and let the platform refresh it. If using explicit env API key, ensure `OPENAI_API_KEY`/`CODEX_API_KEY` is present |
 | `RUNNER_TIMEOUT` | AI provider slow or task too long | Timeout comes from Cutie Server `task.push.timeout_seconds`; retry after simplifying the task or raising the server-side task timeout |
 | service idle, never picks tasks | not paired | Run `cutie-pair <pair_token>` then `pm2 restart zylos-cutie` |
 

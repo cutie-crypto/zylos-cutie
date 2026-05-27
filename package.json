@@ -1,6 +1,6 @@
 {
   "name": "@cutie-crypto/zylos-cutie",
-  "version": "2.3.3",
+  "version": "2.3.4",
   "description": "Cutie KOL agent component for Zylos / COCO runtime — Claude / Codex CLI under SRT sandbox",
   "type": "module",
   "main": "dist/index.js",

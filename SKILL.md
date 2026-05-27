@@ -1,6 +1,6 @@
 ---
 name: cutie
-version: 2.3.3
+version: 2.3.4
 description: >
   Cutie 加密货币 KOL 私域社群组件。Use when KOL 在 Cutie App / Web 收到关注用户
   提问，希望让 KOL 自训的 Claude / Codex agent 或 Coco 托管的 Codex runtime
@@ -37,7 +37,7 @@ config:
       description: 'debug | info | warn | error'
       default: "info"
     - name: OPENAI_API_KEY
-      description: Coco/Zylos 托管 Codex runtime 注入的 API key；存在时优先写入隔离 CODEX_HOME。
+      description: 可选用户自带 / 未来平台 env API key；存在时走隔离 CODEX_HOME。
       default: ""
     - name: OPENAI_BASE_URL
       description: Coco/Zylos 托管 Codex runtime 的 API base URL；host 会加入 SRT 白名单。
@@ -63,8 +63,8 @@ pm2 restart zylos-cutie
 
 Service 起来后 KOL 关注者在 Cutie App 提问会通过 Cutie Server 把任务派回 KOL 主机。
 SRT 沙箱里跑 `claude -p "$PROMPT"` 或 `codex exec "$PROMPT"` 出 answer；Coco 托管
-Codex 场景由 PM2 环境注入 `OPENAI_API_KEY` / `OPENAI_BASE_URL`，不要求用户登录自己的
-Codex 账号。
+Codex 场景默认使用平台维护的 `~/.codex/auth.json`，组件不复制、不刷新 credential。
+只有显式配置 `OPENAI_API_KEY` / `OPENAI_BASE_URL` 时才走隔离 CODEX_HOME。
 
 ---
 

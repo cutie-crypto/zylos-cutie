@@ -5,8 +5,8 @@
  *   - 网络白名单只包含 AI provider API + OAuth 必需域名；非白名单一律 403
  *   - 文件读策略：denyRead 把 ~/.ssh / ~/.aws / ~/zylos/memory / ~/.zylos 都拒掉
  *     （deny-then-allow，可在需要时 allowRead 精确放回）
- *   - 文件写策略：allowWrite 仅 cwd + /tmp + 组件 state（关键：用 CODEX_HOME
- *     隔离 codex sessions，不允许写 KOL 主 ~/.codex）
+ *   - 文件写策略：allowWrite 仅 cwd + /tmp + 组件 state；Codex 托管模式允许
+ *     CLI 写平台维护的 ~/.codex，避免复制 credential 与平台刷新机制竞争。
  *   - 平台差异：macOS Seatbelt 不支持嵌套；Linux bwrap 用 mount 隔离，被拒文件
  *     表现为 ENOENT 而非 EPERM（runner 错误分类时要兼容）
  */
@@ -29,12 +29,16 @@ export interface SrtSettings {
 }
 
 /**
- * 默认 SRT settings。runtime 决定要不要把 CODEX_HOME 加进 allowWrite。
+ * 默认 SRT settings。runtime 决定 Codex 凭据目录写策略：
+ *   - 有 OPENAI_API_KEY/CODEX_API_KEY 时走隔离 CODEX_HOME（用户自带 key / 未来 broker env）
+ *   - 没有 env key 时走 COCO/Zylos 平台维护的 ~/.codex
  *
  * @param runtime 'claude' / 'codex'
  */
 export function buildDefaultSrtSettings(runtime: 'claude' | 'codex'): SrtSettings {
   const HOME = os.homedir();
+  const realCodexHome = path.join(HOME, '.codex');
+  const usesEnvApiKey = Boolean(getManagedCodexApiKey());
   const allowedDomains = [
     // Anthropic / Claude
     'api.anthropic.com',
@@ -69,10 +73,11 @@ export function buildDefaultSrtSettings(runtime: 'claude' | 'codex'): SrtSetting
     STATE_DIR,
   ];
 
-  // codex 0.128 即便 --ephemeral 也要在 CODEX_HOME 写 sessions/。
-  // 我们用独立 CODEX_HOME 隔离到组件目录，所以只允许写这里，不允许写 ~/.codex。
   if (runtime === 'codex') {
-    allowWrite.push(CODEX_HOME);
+    // codex 0.128 即便 --ephemeral 也要写 sessions/，并且平台托管
+    // credential 可能由 CLI/平台刷新。默认 COCO 路径必须使用真实 ~/.codex，
+    // 不复制 auth.json 到组件目录；只有用户自带 API key env 时才走隔离 CODEX_HOME。
+    allowWrite.push(usesEnvApiKey ? CODEX_HOME : realCodexHome);
   }
 
   const denyWrite = [
@@ -80,9 +85,11 @@ export function buildDefaultSrtSettings(runtime: 'claude' | 'codex'): SrtSetting
     path.join(HOME, '.ssh'),
     path.join(HOME, '.aws'),
     path.join(HOME, '.gnupg'),
-    path.join(HOME, '.codex'),         // 显式拒绝写主 codex（即便 allowWrite 漏配也兜底）
     path.join(HOME, '.zylos'),
   ];
+  if (runtime !== 'codex' || usesEnvApiKey) {
+    denyWrite.push(realCodexHome);
+  }
 
   return {
     network: { allowedDomains, deniedDomains: [] },
@@ -97,11 +104,16 @@ export function writeSrtSettings(settings: SrtSettings): string {
 }
 
 /**
- * 准备 CODEX_HOME 隔离目录。优先使用 Coco/Zylos 注入的 OpenAI/Codex API key；
- * 没有托管凭据时，才兼容复制本机 ~/.codex/ 的 auth.json + config.toml。
- * codex CLI 跑时设 `CODEX_HOME=$DATA_DIR/codex-home`，session 写在这而不是污染主目录。
+ * 准备 Codex 凭据模式。
  *
- * **HIGH-7 修复**：凭据不可用 / 复制失败时，写 `codex-home-status.json` 显式标
+ * 默认 COCO/Zylos 托管路径：不读取、不复制、不刷新 ~/.codex/auth.json；
+ * 仅确认平台 credential 文件存在，runner 直接调用 codex CLI，让 CLI 使用平台维护
+ * 的真实 ~/.codex。这样不会和 COCO 的 token 刷新机制产生独立 auth 副本竞争。
+ *
+ * 可选用户 API key 路径：如果显式设置 OPENAI_API_KEY/CODEX_API_KEY，则写入
+ * 隔离 CODEX_HOME，runner 会设置 CODEX_HOME=$DATA_DIR/codex-home。
+ *
+ * **HIGH-7 修复**：凭据不可用时，写 `codex-home-status.json` 显式标
  * unavailable + 原因。runner.ts 启动前读这个文件，看到 unavailable 就提前 fail closed
  * 报 `RUNNER_UNAVAILABLE`，而不是让 codex 跑起来后用空 auth.json 被错归 RUNNER_FAILURE。
  */
@@ -111,15 +123,14 @@ export function ensureCodexHome(_claudeFallbackBin: string | null, codexBin: str
     if (fs.existsSync(CODEX_HOME_STATUS_FILE)) fs.unlinkSync(CODEX_HOME_STATUS_FILE);
     return;
   }
-  fs.mkdirSync(CODEX_HOME, { recursive: true });
-
   const managedApiKey = getManagedCodexApiKey();
   if (managedApiKey) {
+    fs.mkdirSync(CODEX_HOME, { recursive: true });
     writeManagedCodexHome(managedApiKey);
-    if (fs.existsSync(CODEX_HOME_STATUS_FILE)) fs.unlinkSync(CODEX_HOME_STATUS_FILE);
     writeCodexHomeStatus({
       status: 'ok',
-      source: 'managed_env',
+      source: 'env_api_key',
+      codex_home: CODEX_HOME,
       has_base_url: Boolean(getCodexBaseUrl()),
       timestamp: new Date().toISOString(),
     });
@@ -128,46 +139,28 @@ export function ensureCodexHome(_claudeFallbackBin: string | null, codexBin: str
 
   const HOME = os.homedir();
   const realCodexHome = path.join(HOME, '.codex');
-  if (!fs.existsSync(realCodexHome)) {
+  const authPath = path.join(realCodexHome, 'auth.json');
+  if (!fs.existsSync(authPath)) {
     writeCodexHomeStatus({
       status: 'CODEX_HOME_UNAVAILABLE',
-      reason: 'Codex credentials unavailable: set OPENAI_API_KEY/CODEX_API_KEY for managed Coco runtime, or provide ~/.codex auth for standalone mode',
+      reason: 'COCO/Zylos platform Codex credential unavailable: ~/.codex/auth.json missing',
       timestamp: new Date().toISOString(),
     });
     return;
   }
 
-  const errors: string[] = [];
+  // 清理旧版本可能留下的独立 auth/config 副本，避免后续误判为组件自管 credential。
   for (const file of ['auth.json', 'config.toml']) {
-    const src = path.join(realCodexHome, file);
-    const dst = path.join(CODEX_HOME, file);
-    if (!fs.existsSync(src)) {
-      // auth.json 缺 = 没登录；config.toml 缺 = codex 还没初始化
-      errors.push(`${file} missing in ~/.codex/`);
-      continue;
-    }
-    if (fs.existsSync(dst)) continue; // already copied
-    try {
-      fs.copyFileSync(src, dst, fs.constants.COPYFILE_FICLONE);
-      // 0o600：复制后明确权限（KOL 主 ~/.codex/auth.json 默认 0o600，但 copy 受 umask 影响）
-      fs.chmodSync(dst, 0o600);
-    } catch (err) {
-      errors.push(`${file}: ${(err as Error).message}`);
-    }
+    const stale = path.join(CODEX_HOME, file);
+    if (fs.existsSync(stale)) fs.unlinkSync(stale);
   }
 
-  if (errors.length > 0) {
-    writeCodexHomeStatus({
-      status: 'CODEX_HOME_UNAVAILABLE',
-      reason: errors.join('; '),
-      timestamp: new Date().toISOString(),
-    });
-    return;
-  }
-
-  // 一切顺利，删旧 status（如果之前凭据不可用现在补齐了）
-  if (fs.existsSync(CODEX_HOME_STATUS_FILE)) fs.unlinkSync(CODEX_HOME_STATUS_FILE);
-  writeCodexHomeStatus({ status: 'ok', timestamp: new Date().toISOString() });
+  writeCodexHomeStatus({
+    status: 'ok',
+    source: 'platform_codex_home',
+    codex_home: realCodexHome,
+    timestamp: new Date().toISOString(),
+  });
 }
 
 function writeCodexHomeStatus(payload: Record<string, unknown>): void {

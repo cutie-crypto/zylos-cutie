@@ -8,7 +8,8 @@
  *   - timeout                                → RUNNER_TIMEOUT
  *   - exit != 0 / spawn error / 其他         → RUNNER_FAILURE
  *
- * codex 用 CODEX_HOME=$DATA_DIR/codex-home 隔离，避免写 KOL 主 ~/.codex。
+ * Codex 默认使用 COCO/Zylos 平台维护的 ~/.codex。只有显式 OPENAI_API_KEY /
+ * CODEX_API_KEY 场景才设置 CODEX_HOME=$DATA_DIR/codex-home。
  * SRT 自身的 exit code 在 "沙箱内子命令找不到" 场景下不可信（spike §3.6），
  * 所以这里在跑 SRT 之前先用 fs.existsSync 校验 binary 真实存在。
  */
@@ -111,9 +112,10 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
     };
   }
 
-  // (4.5) codex 路径额外校验 CODEX_HOME 是否就绪。ensureCodexHome 优先写入
-  // Coco/Zylos 托管凭据，standalone 模式才复制本机 auth.json；失败时
-  // srt-settings.ts 写 codex-home-status.json 标 unavailable，runner 这里读它。
+  let useIsolatedCodexHome = false;
+  // (4.5) codex 路径额外校验 credential 模式是否就绪。默认 COCO/Zylos
+  // 托管路径使用平台维护的真实 ~/.codex；只有 OPENAI_API_KEY/CODEX_API_KEY
+  // 可选路径才写隔离 CODEX_HOME。失败时 srt-settings.ts 写 status unavailable。
   if (chosen === 'codex') {
     const codexStatus = readJsonOrNull(CODEX_HOME_STATUS_FILE);
     if (codexStatus !== null && codexStatus['status'] !== 'ok') {
@@ -123,6 +125,7 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
         detail: { reason: 'codex-home not ready', codex_home_status: codexStatus },
       };
     }
+    useIsolatedCodexHome = codexStatus?.['source'] === 'env_api_key';
   }
 
   // (5) spawn
@@ -137,8 +140,9 @@ export async function runTask(input: RunTaskInput): Promise<RunnerResult> {
       ];
 
   const spawnEnv: NodeJS.ProcessEnv = { ...process.env };
-  if (chosen === 'codex') {
-    // CODEX_HOME 隔离：让 codex 写 sessions 到组件 state，而不是 KOL 主 ~/.codex
+  if (chosen === 'codex' && useIsolatedCodexHome) {
+    // 用户自带 API key / 未来 env broker 路径：让 codex 使用组件隔离 CODEX_HOME。
+    // COCO 托管默认路径不设置 CODEX_HOME，交给 CLI 使用平台维护的 ~/.codex。
     spawnEnv['CODEX_HOME'] = CODEX_HOME;
   }
 
