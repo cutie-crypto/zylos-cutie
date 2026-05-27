@@ -179,12 +179,6 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
   }
 
   async selfUpgrade(targetVersion: string): Promise<void> {
-    // 升级路径自适应安装方法（两条路径都支持）：
-    //   - 装在 zylos lifecycle 里（`zylos add cutie-crypto/zylos-cutie`）→ 走 `zylos upgrade cutie`，
-    //     由 zylos CLI 拉 github tarball + npm install + 重启 PM2。
-    //   - 装在 npm-global 里（`npm install -g @cutie-crypto/zylos-cutie`）→ 走
-    //     `npm install -g @cutie-crypto/zylos-cutie@<targetVersion>` + `process.exit(0)` 让 PM2 自动重启。
-    // 检测方式：读 ~/zylos/.zylos/components.json 看 cutie 是否注册。
     const usesZylosLifecycle = isZylosManagedComponent('cutie');
     const upgrade = buildSelfUpgradeCommand(usesZylosLifecycle, targetVersion);
     const method = upgrade.method;
@@ -192,11 +186,18 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
 
     if (usesZylosLifecycle) {
       const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
+      const installedVersion = readInstalledVersion();
       log.info('selfUpgrade completed via zylos CLI', {
         target_version: targetVersion,
+        installed_version: installedVersion,
         elapsed_ms: result.elapsed_ms,
         stdout_tail: result.stdout.slice(-512),
       });
+      if (installedVersion && installedVersion !== targetVersion) {
+        throw new Error(
+          `zylos upgrade exited 0 but version is ${installedVersion}, expected ${targetVersion}`,
+        );
+      }
       return;
     }
 
@@ -286,6 +287,18 @@ async function flushStdout(): Promise<void> {
       // 已经全部 drained，但仍走 callback 路径保证一致
     }
   });
+}
+
+/** 读取磁盘上的 package.json version（zylos upgrade 后磁盘已更新但内存还是旧的）。 */
+function readInstalledVersion(): string | null {
+  try {
+    const pkgPath = path.resolve(__dirname, '..', 'package.json');
+    const raw = fs.readFileSync(pkgPath, 'utf8');
+    const pkg = JSON.parse(raw) as { version?: string };
+    return pkg.version ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /** Exported for unit tests; production code should not call directly. */
