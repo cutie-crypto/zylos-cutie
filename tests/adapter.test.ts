@@ -320,6 +320,30 @@ describe('ZylosPlatformAdapter', () => {
       });
     });
 
+    it('zylos lifecycle 路径给 hook 传 CUTIE_SELF_UPGRADE，避免 pre-upgrade 停掉自身 PM2 进程', async () => {
+      const fs = (await import('node:fs')).default;
+      const os = (await import('node:os')).default;
+      const path = (await import('node:path')).default;
+      const { runUpgradeCommand } = await import('../src/adapter.js');
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zylos-cutie-upgrade-env-'));
+      const envFile = path.join(tmpDir, 'env.json');
+      const fakeZylos = path.join(tmpDir, 'zylos');
+      fs.writeFileSync(
+        fakeZylos,
+        `#!/bin/sh\nnode -e 'require("fs").writeFileSync(${JSON.stringify(envFile)}, JSON.stringify({ CUTIE_SELF_UPGRADE: process.env.CUTIE_SELF_UPGRADE || null }))'\n`,
+        { mode: 0o755 },
+      );
+      try {
+        const oldPath = process.env.PATH;
+        process.env.PATH = `${tmpDir}:${oldPath ?? ''}`;
+        await runUpgradeCommand('zylos', ['upgrade', 'cutie'], '2.3.7', 'zylos-cli');
+        expect(JSON.parse(fs.readFileSync(envFile, 'utf8'))).toEqual({ CUTIE_SELF_UPGRADE: '1' });
+        process.env.PATH = oldPath;
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
     it('npm-global 路径固定安装 server 下发的目标版本', async () => {
       const { buildSelfUpgradeCommand } = await import('../src/adapter.js');
       expect(buildSelfUpgradeCommand(false, '2.3.2')).toEqual({

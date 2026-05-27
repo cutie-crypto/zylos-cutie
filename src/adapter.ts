@@ -185,7 +185,7 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     log.info('selfUpgrade started', { target_version: targetVersion, method });
 
     if (usesZylosLifecycle) {
-      const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
+    const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
       const installedVersion = readInstalledVersion();
       log.info('selfUpgrade completed via zylos CLI', {
         target_version: targetVersion,
@@ -245,7 +245,10 @@ export async function runUpgradeCommand(
 ): Promise<UpgradeExecResult> {
   const t0 = Date.now();
   return new Promise<UpgradeExecResult>((resolve, reject) => {
-    execFile(command, args, { timeout: SELF_UPGRADE_TIMEOUT_MS }, (err, stdout, stderr) => {
+    const env = method === 'zylos-cli'
+      ? { ...process.env, CUTIE_SELF_UPGRADE: '1' }
+      : process.env;
+    execFile(command, args, { timeout: SELF_UPGRADE_TIMEOUT_MS, env }, (err, stdout, stderr) => {
       const elapsed_ms = Date.now() - t0;
       // execFile 默认 encoding='utf8' → stdout/stderr 是 string；显式 cast 让 strict TS 不抱怨
       const stdoutStr = (stdout ?? '') as string;

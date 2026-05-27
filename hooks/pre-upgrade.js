@@ -38,11 +38,20 @@ for (const d of ['state', 'knowledge']) {
 console.log(`[zylos-cutie pre-upgrade] backup: ${target}`);
 
 // 2. PM2 stop（容错：PM2 不在或 service 没起也没关系）
-try {
-  execSync('pm2 stop zylos-cutie', { stdio: 'ignore' });
-  console.log('[zylos-cutie pre-upgrade] pm2 stop zylos-cutie ok');
-} catch {
-  console.log('[zylos-cutie pre-upgrade] pm2 stop noop (service not running)');
+//
+// Server-triggered self-upgrade runs `zylos upgrade cutie` from inside the
+// zylos-cutie PM2 process. Stopping that same process here can kill the
+// upgrade before post-upgrade has a chance to restart it, so self-upgrade
+// marks the child environment and lets post-upgrade do the restart.
+if (process.env.CUTIE_SELF_UPGRADE === '1') {
+  console.log('[zylos-cutie pre-upgrade] self-upgrade detected; skip pm2 stop');
+} else {
+  try {
+    execSync('pm2 stop zylos-cutie', { stdio: 'ignore' });
+    console.log('[zylos-cutie pre-upgrade] pm2 stop zylos-cutie ok');
+  } catch {
+    console.log('[zylos-cutie pre-upgrade] pm2 stop noop (service not running)');
+  }
 }
 
 // 修剪老备份：只保留最近 5 个
