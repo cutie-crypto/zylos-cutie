@@ -20,6 +20,7 @@ import { applySafetyTemplates as cacheTemplates } from './safety-templates.js';
 import { buildPrompt } from './prompt-builder.js';
 import { runTask } from './runner.js';
 import { log } from './logger.js';
+import { runBacktest } from './backtest-provider.js';
 /**
  * zylos 自己的 ErrorType 枚举（src/errors.ts）比 connector-core 的
  * RunnerErrorEnvelope.error_type 多 CONFIG_INVALID / QUEUE_FULL 两个值，
@@ -49,6 +50,23 @@ function mapZylosErrorType(zylosType) {
             const _exhaustive = zylosType;
             return _exhaustive;
         }
+    }
+}
+/**
+ * Map backtest route error types to connector-core wire error_type.
+ * TOOL_NOT_FOUND / TOOL_UNHEALTHY → RUNNER_FAILURE (specific tool problem).
+ * RUNNER_UNAVAILABLE → RUNNER_UNAVAILABLE (no tool available at all).
+ * Unknown types → RUNNER_FAILURE with original type preserved in error_message.
+ */
+function mapBacktestRouteErrorType(routeErrorType) {
+    switch (routeErrorType) {
+        case 'TOOL_NOT_FOUND':
+        case 'TOOL_UNHEALTHY':
+            return 'RUNNER_FAILURE';
+        case 'RUNNER_UNAVAILABLE':
+            return 'RUNNER_UNAVAILABLE';
+        default:
+            return 'RUNNER_FAILURE';
     }
 }
 const SELF_UPGRADE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -82,8 +100,14 @@ export function buildSelfUpgradeCommand(usesZylosLifecycle, targetVersion) {
 export class ZylosPlatformAdapter {
     id = 'zylos';
     cfg = null;
+    /** W3.8: full connector config reference for backtest tool lookup */
+    connectorConfig = null;
     attachConfig(config) {
         this.cfg = config;
+    }
+    /** W3.8: attach full connector config for backtest tool access */
+    attachConnectorConfig(config) {
+        this.connectorConfig = config;
     }
     async callAgent(input) {
         if (!this.cfg) {
@@ -95,6 +119,10 @@ export class ZylosPlatformAdapter {
                 error_message: 'ZylosPlatformAdapter.callAgent: attachConfig must be called first',
                 elapsed_ms: 0,
             };
+        }
+        // BLOCKING #1: backtest_run scene goes through provider bridge, not LLM runner.
+        if (input.scene === 'backtest_run') {
+            return this.handleBacktestTask(input);
         }
         // input.model 来自 server task.payload.agent_model；当前 claude / codex CLI 不接受
         // 任意 model id 切换（claude code 用账户绑定的默认模型；codex 走 ~/.codex/config.toml），
@@ -146,6 +174,130 @@ export class ZylosPlatformAdapter {
             elapsed_ms: result.elapsed_ms ?? 0,
         };
     }
+    /**
+     * W3.8 BLOCKING #1: Handle backtest_run tasks through provider bridge.
+     *
+     * Flow:
+     *   1. Parse task envelope from input.raw_payload.backtest (server W3 dispatch)
+     *   2. Route to local provider via routeBacktestTask
+     *   3. On success, POST result to /external-result API (FormData, connector_token auth)
+     *   4. Return AgentResult / RunnerErrorEnvelope to connector-core dispatcher
+     */
+    async handleBacktestTask(input) {
+        const t0 = Date.now();
+        const taskEnvelope = this.extractBacktestEnvelope(input);
+        if (!taskEnvelope) {
+            return {
+                status: 'error',
+                error_type: 'RUNNER_FAILURE',
+                error_message: 'backtest_run: missing structured payload.backtest envelope',
+                elapsed_ms: Date.now() - t0,
+            };
+        }
+        const routeResult = await this.routeBacktestTask(taskEnvelope);
+        if (routeResult.status === 'error') {
+            // Map backtest route error types to connector-core wire types.
+            const wireErrorType = mapBacktestRouteErrorType(routeResult.error_type);
+            return {
+                status: 'error',
+                error_type: wireErrorType,
+                error_message: routeResult.error_message,
+                elapsed_ms: Date.now() - t0,
+            };
+        }
+        // Success path: POST result to /external-result API so Cutie Server records it.
+        const runId = taskEnvelope['run_id'];
+        if (runId && this.connectorConfig?.connector_token && this.connectorConfig?.server_url) {
+            try {
+                await this.postExternalResult(runId, routeResult.response);
+            }
+            catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                return {
+                    status: 'error',
+                    error_type: 'RUNNER_FAILURE',
+                    error_message: `backtest_run: external-result callback failed: ${msg}`,
+                    elapsed_ms: Date.now() - t0,
+                };
+            }
+        }
+        return {
+            status: 'success',
+            answer: JSON.stringify(routeResult.response),
+            latency_ms: Date.now() - t0,
+        };
+    }
+    /**
+     * Server W3 dispatch puts the structured backtest envelope in payload.backtest.
+     * Older tests/dev harnesses may still put JSON in message; keep that as fallback only.
+     */
+    extractBacktestEnvelope(input) {
+        const rawPayload = input.raw_payload;
+        const rawBacktest = rawPayload?.['backtest'];
+        if (rawBacktest && typeof rawBacktest === 'object' && !Array.isArray(rawBacktest)) {
+            return rawBacktest;
+        }
+        if (!input.message.trim())
+            return null;
+        try {
+            const parsed = JSON.parse(input.message);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                return parsed;
+            }
+        }
+        catch {
+            return null;
+        }
+        return null;
+    }
+    /**
+     * POST backtest result to Cutie Server /external-result endpoint.
+     * Uses FormData + connector_token Bearer auth.
+     */
+    async postExternalResult(runId, response) {
+        const serverUrl = this.connectorConfig.server_url.replace(/\/$/, '');
+        const token = this.connectorConfig.connector_token;
+        const url = `${serverUrl}/v1/connector/strategy-backtests/${runId}/external-result`;
+        const formBody = new FormData();
+        formBody.set('result_status', response.result_status);
+        formBody.set('provider_name', response.provider_name);
+        if (response.provider_run_id)
+            formBody.set('provider_run_id', response.provider_run_id);
+        if (response.engine_name)
+            formBody.set('engine_name', response.engine_name);
+        if (response.engine_version)
+            formBody.set('engine_version', response.engine_version);
+        if (response.data_source)
+            formBody.set('data_source', response.data_source);
+        if ('result_hash' in response && response.result_hash)
+            formBody.set('result_hash', response.result_hash);
+        if ('report_url' in response && response.report_url)
+            formBody.set('report_url', response.report_url);
+        formBody.set('assumptions_json', JSON.stringify(response.assumptions ?? {}));
+        formBody.set('limitations_json', JSON.stringify(response.limitations ?? {}));
+        formBody.set('raw_report_json', JSON.stringify(response.raw_report ?? {}));
+        if (response.result_status === 'success') {
+            formBody.set('metrics_json', JSON.stringify(response.metrics));
+            formBody.set('equity_curve_json', JSON.stringify(response.equity_curve ?? []));
+            formBody.set('trades_json', JSON.stringify(response.trades ?? []));
+        }
+        else {
+            formBody.set('error_type', response.error_type);
+            formBody.set('error_message', response.error_message);
+        }
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+            },
+            body: formBody,
+            signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) {
+            const text = await res.text().catch(() => '');
+            throw new Error(`external-result returned HTTP ${res.status}: ${text.slice(0, 200)}`);
+        }
+    }
     async selfUpgrade(targetVersion) {
         const usesZylosLifecycle = isZylosManagedComponent('cutie');
         const upgrade = buildSelfUpgradeCommand(usesZylosLifecycle, targetVersion);
@@ -178,7 +330,28 @@ export class ZylosPlatformAdapter {
         process.exit(0);
     }
     augmentHeartbeat(envelope) {
-        // zylos-cutie 不需要兼容 OpenClaw 的 openclaw_status 历史字段。返回原 envelope。
+        // W3.8: inject backtest_tools_json for W3.7 heartbeat catalog
+        const tools = this.connectorConfig?.backtest_tools ?? [];
+        const reportableTools = tools.filter((t) => t.health === 'ok' || t.health === 'unavailable');
+        if (reportableTools.length > 0) {
+            const catalog = {
+                schema: 'cutie.backtest_tool_catalog.v1',
+                tools: reportableTools.map((t) => ({
+                    tool_id: t.tool_id,
+                    name: t.name,
+                    provider_name: t.provider_name,
+                    engine_name: t.engine_name,
+                    engine_version: t.engine_version,
+                    markets: t.markets,
+                    timeframes: t.timeframes,
+                    default: t.default,
+                    health: t.health,
+                    param_schema: t.param_schema,
+                    expected_outputs: t.expected_outputs,
+                })),
+            };
+            envelope['backtest_tools_json'] = JSON.stringify(catalog);
+        }
         return envelope;
     }
     getCapabilities() {
@@ -186,10 +359,60 @@ export class ZylosPlatformAdapter {
         if (this.cfg?.chosen_runtime) {
             caps.push(`runtime=${this.cfg.chosen_runtime}`);
         }
+        // W3.8: declare backtest_run if at least one healthy tool exists
+        const tools = this.connectorConfig?.backtest_tools ?? [];
+        if (tools.some((t) => t.health === 'ok')) {
+            caps.push('backtest_run');
+        }
         return caps;
     }
     applySafetyTemplates(templates) {
         cacheTemplates(templates);
+    }
+    /**
+     * W3.8 SS6.4: Route a backtest_run task to the correct local provider.
+     * Returns the provider response or a structured error.
+     *
+     * BLOCKING #2 fix: wraps flat task envelope into the nested format that
+     * Python providers expect (`cutie.external_backtest.request.v1`).
+     */
+    async routeBacktestTask(taskEnvelope) {
+        const providerToolId = taskEnvelope['provider_tool_id'];
+        const tools = this.connectorConfig?.backtest_tools ?? [];
+        let tool;
+        if (providerToolId) {
+            tool = tools.find((t) => t.tool_id === providerToolId);
+            if (!tool) {
+                return { status: 'error', error_type: 'TOOL_NOT_FOUND', error_message: `Tool "${providerToolId}" not found in local catalog` };
+            }
+            if (tool.health !== 'ok') {
+                return { status: 'error', error_type: 'TOOL_UNHEALTHY', error_message: `Tool "${providerToolId}" health is ${tool.health}` };
+            }
+        }
+        else {
+            // Find default tool
+            tool = tools.find((t) => t.default && t.health === 'ok');
+            if (!tool) {
+                return { status: 'error', error_type: 'RUNNER_UNAVAILABLE', error_message: 'No default backtest tool available' };
+            }
+        }
+        // BLOCKING #2: wrap flat envelope into provider-expected nested format.
+        // Python providers expect { schema, backtest: {...}, provider: {...} }.
+        const providerRequest = {
+            schema: 'cutie.external_backtest.request.v1',
+            backtest: taskEnvelope,
+            provider: {
+                provider_name: tool.provider_name,
+                engine_name: tool.engine_name,
+                engine_version: tool.engine_version,
+                data_source: tool.data_source ?? '',
+            },
+        };
+        const result = await runBacktest(tool, providerRequest);
+        if (!result.ok) {
+            return { status: 'error', error_type: result.error_type, error_message: result.error_message };
+        }
+        return { status: 'success', response: result.data };
     }
 }
 /**

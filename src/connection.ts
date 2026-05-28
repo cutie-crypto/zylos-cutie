@@ -38,6 +38,8 @@ export class ZylosCutieConnection {
       chosen_runtime: deps.runtimeDetect.chosen,
     };
     adapter.attachConfig(adapterCfg);
+    // W3.8: pass full config for backtest tool catalog + capabilities
+    adapter.attachConnectorConfig(deps.config);
 
     const coreCfg: CoreConnectionConfig = {
       connector_id: deps.config.connector_id,

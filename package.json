@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "cutie-pair": "dist/cli/pair.js"
+    "cutie-pair": "dist/cli/pair.js",
+    "cutie-connector": "dist/cli/backtest-tool.js"
   },
   "files": [
     "dist",
