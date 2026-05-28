@@ -229,7 +229,7 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
    * W3.8 BLOCKING #1: Handle backtest_run tasks through provider bridge.
    *
    * Flow:
-   *   1. Parse task envelope from input.message (JSON)
+   *   1. Parse task envelope from input.raw_payload.backtest (server W3 dispatch)
    *   2. Route to local provider via routeBacktestTask
    *   3. On success, POST result to /external-result API (FormData, connector_token auth)
    *   4. Return AgentResult / RunnerErrorEnvelope to connector-core dispatcher
@@ -237,15 +237,12 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
   private async handleBacktestTask(input: TaskInput): Promise<AgentResult | RunnerErrorEnvelope> {
     const t0 = Date.now();
 
-    // Parse backtest task envelope from message field (JSON-encoded by server).
-    let taskEnvelope: Record<string, unknown>;
-    try {
-      taskEnvelope = JSON.parse(input.message) as Record<string, unknown>;
-    } catch {
+    const taskEnvelope = this.extractBacktestEnvelope(input);
+    if (!taskEnvelope) {
       return {
         status: 'error',
         error_type: 'RUNNER_FAILURE',
-        error_message: 'backtest_run: input.message is not valid JSON',
+        error_message: 'backtest_run: missing structured payload.backtest envelope',
         elapsed_ms: Date.now() - t0,
       };
     }
@@ -269,10 +266,13 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
       try {
         await this.postExternalResult(runId, routeResult.response);
       } catch (err) {
-        // Log but don't fail the task — result was computed successfully.
-        // Server can reconcile via task.result answer JSON.
         const msg = err instanceof Error ? err.message : String(err);
-        log.warn('backtest_run: external-result callback failed', { run_id: runId, error: msg });
+        return {
+          status: 'error',
+          error_type: 'RUNNER_FAILURE',
+          error_message: `backtest_run: external-result callback failed: ${msg}`,
+          elapsed_ms: Date.now() - t0,
+        };
       }
     }
 
@@ -284,23 +284,52 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
   }
 
   /**
+   * Server W3 dispatch puts the structured backtest envelope in payload.backtest.
+   * Older tests/dev harnesses may still put JSON in message; keep that as fallback only.
+   */
+  private extractBacktestEnvelope(input: TaskInput): Record<string, unknown> | null {
+    const rawPayload = (input as ZylosTaskInput).raw_payload;
+    const rawBacktest = rawPayload?.['backtest'];
+    if (rawBacktest && typeof rawBacktest === 'object' && !Array.isArray(rawBacktest)) {
+      return rawBacktest as Record<string, unknown>;
+    }
+    if (!input.message.trim()) return null;
+    try {
+      const parsed = JSON.parse(input.message) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  /**
    * POST backtest result to Cutie Server /external-result endpoint.
-   * Uses FormData (x-www-form-urlencoded) + connector_token Bearer auth.
+   * Uses FormData + connector_token Bearer auth.
    */
   private async postExternalResult(runId: string, response: BacktestResponse): Promise<void> {
     const serverUrl = this.connectorConfig!.server_url.replace(/\/$/, '');
     const token = this.connectorConfig!.connector_token!;
     const url = `${serverUrl}/v1/connector/strategy-backtests/${runId}/external-result`;
 
-    const formBody = new URLSearchParams();
-    formBody.set('result_json', JSON.stringify(response));
+    const formBody = new FormData();
     formBody.set('result_status', response.result_status);
     formBody.set('provider_name', response.provider_name);
+    if (response.provider_run_id) formBody.set('provider_run_id', response.provider_run_id);
+    if (response.engine_name) formBody.set('engine_name', response.engine_name);
+    if (response.engine_version) formBody.set('engine_version', response.engine_version);
+    if (response.data_source) formBody.set('data_source', response.data_source);
+    if ('result_hash' in response && response.result_hash) formBody.set('result_hash', response.result_hash);
+    if ('report_url' in response && response.report_url) formBody.set('report_url', response.report_url);
+    formBody.set('assumptions_json', JSON.stringify(response.assumptions ?? {}));
+    formBody.set('limitations_json', JSON.stringify(response.limitations ?? {}));
+    formBody.set('raw_report_json', JSON.stringify(response.raw_report ?? {}));
     if (response.result_status === 'success') {
-      formBody.set('engine_name', response.engine_name);
-      formBody.set('engine_version', response.engine_version);
-      if (response.provider_run_id) formBody.set('provider_run_id', response.provider_run_id);
-      if (response.result_hash) formBody.set('result_hash', response.result_hash);
+      formBody.set('metrics_json', JSON.stringify(response.metrics));
+      formBody.set('equity_curve_json', JSON.stringify(response.equity_curve ?? []));
+      formBody.set('trades_json', JSON.stringify(response.trades ?? []));
     } else {
       formBody.set('error_type', response.error_type);
       formBody.set('error_message', response.error_message);
@@ -309,10 +338,9 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     const res = await fetch(url, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
         'Authorization': `Bearer ${token}`,
       },
-      body: formBody.toString(),
+      body: formBody,
       signal: AbortSignal.timeout(15_000),
     });
 

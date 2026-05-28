@@ -6,7 +6,7 @@
  * envelope wrapping for providers.
  */
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import type { TaskInput } from '@cutie-crypto/connector-core';
 import type { ZylosCutieConfig, BacktestToolConfig } from '../src/config.js';
 
@@ -327,6 +327,20 @@ describe('W3.8 adapter backtest', () => {
       timeout_ms: 60_000,
     };
 
+    function makeInputWithBacktest(backtest: Record<string, unknown>): TaskInput {
+      return {
+        ...BACKTEST_INPUT,
+        message: '',
+        raw_payload: {
+          kol_user_id: 'kol-1',
+          caller_user_id: 'caller-2',
+          scene: 'backtest_run',
+          agent_model: 'cutie',
+          backtest,
+        },
+      } as TaskInput;
+    }
+
     it('routes backtest_run scene to provider instead of LLM runner', async () => {
       const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
       globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -385,7 +399,10 @@ describe('W3.8 adapter backtest', () => {
       config.connector_token = 'ctk_test123';
       a.attachConnectorConfig(config);
 
-      await a.callAgent(BACKTEST_INPUT);
+      await a.callAgent(makeInputWithBacktest({
+        run_id: '999888777',
+        provider_tool_id: 'local.bt.ema',
+      }));
 
       const externalCall = fetchCalls.find((c) => c.url.includes('/external-result'));
       expect(externalCall).toBeDefined();
@@ -394,9 +411,19 @@ describe('W3.8 adapter backtest', () => {
       expect(externalCall!.init?.headers).toEqual(
         expect.objectContaining({ 'Authorization': 'Bearer ctk_test123' }),
       );
+      const body = externalCall!.init?.body as FormData;
+      expect(body.get('result_json')).toBeNull();
+      expect(body.get('result_status')).toBe('success');
+      expect(body.get('provider_name')).toBe('Local BT');
+      expect(JSON.parse(body.get('metrics_json') ?? '{}')).toEqual({});
+      expect(JSON.parse(body.get('equity_curve_json') ?? '[]')).toEqual([]);
+      expect(JSON.parse(body.get('trades_json') ?? '[]')).toEqual([]);
+      expect(JSON.parse(body.get('assumptions_json') ?? '{}')).toEqual({});
+      expect(JSON.parse(body.get('limitations_json') ?? '{}')).toEqual({});
+      expect(JSON.parse(body.get('raw_report_json') ?? '{}')).toEqual({});
     });
 
-    it('returns error when input.message is not valid JSON', async () => {
+    it('returns error when structured backtest envelope is missing', async () => {
       const { ZylosPlatformAdapter } = await import('../src/adapter.js');
       const a = new ZylosPlatformAdapter();
       a.attachConfig({ chosen_runtime: 'claude' });
@@ -409,7 +436,7 @@ describe('W3.8 adapter backtest', () => {
       expect(result.status).toBe('error');
       if (result.status === 'error') {
         expect(result.error_type).toBe('RUNNER_FAILURE');
-        expect(result.error_message).toContain('not valid JSON');
+        expect(result.error_message).toContain('missing structured payload.backtest');
       }
     });
 
@@ -446,8 +473,7 @@ describe('W3.8 adapter backtest', () => {
       }
     });
 
-    it('succeeds even if /external-result callback fails', async () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    it('returns error if /external-result callback fails', async () => {
       globalThis.fetch = (async (url: string | URL | Request) => {
         const urlStr = typeof url === 'string' ? url : url.toString();
         if (urlStr.includes('/cutie/backtest')) {
@@ -463,24 +489,21 @@ describe('W3.8 adapter backtest', () => {
         return new Response('Internal Server Error', { status: 500 });
       }) as typeof fetch;
 
-      try {
-        const { ZylosPlatformAdapter } = await import('../src/adapter.js');
-        const a = new ZylosPlatformAdapter();
-        a.attachConfig({ chosen_runtime: 'claude' });
-        const config = makeConfig([makeTool()]);
-        config.connector_token = 'ctk_test123';
-        a.attachConnectorConfig(config);
+      const { ZylosPlatformAdapter } = await import('../src/adapter.js');
+      const a = new ZylosPlatformAdapter();
+      a.attachConfig({ chosen_runtime: 'claude' });
+      const config = makeConfig([makeTool()]);
+      config.connector_token = 'ctk_test123';
+      a.attachConnectorConfig(config);
 
-        const result = await a.callAgent(BACKTEST_INPUT);
-        // Should still succeed — callback failure is non-fatal
-        expect(result.status).toBe('success');
-
-        // Should have logged a warning
-        const warnings = warnSpy.mock.calls.map((args) => args.join(' '));
-        const callbackWarn = warnings.find((w) => w.includes('external-result callback failed'));
-        expect(callbackWarn).toBeTruthy();
-      } finally {
-        warnSpy.mockRestore();
+      const result = await a.callAgent(makeInputWithBacktest({
+        run_id: '999888777',
+        provider_tool_id: 'local.bt.ema',
+      }));
+      expect(result.status).toBe('error');
+      if (result.status === 'error') {
+        expect(result.error_type).toBe('RUNNER_FAILURE');
+        expect(result.error_message).toContain('external-result callback failed');
       }
     });
 
