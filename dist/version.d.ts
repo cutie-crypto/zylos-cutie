@@ -3,5 +3,5 @@
  *
  * ⚠️ 与 package.json 的 version 必须同步。tests/version.test.ts 兜底校验。
  */
-export declare const COMPONENT_VERSION = "2.3.9";
+export declare const COMPONENT_VERSION = "2.4.0";
 //# sourceMappingURL=version.d.ts.map
