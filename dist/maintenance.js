@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import os from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { CONFIG_FILE, LOGS_DIR } from './paths.js';
 import { deleteConfig } from './config.js';
 import { COMPONENT_VERSION } from './version.js';
@@ -98,26 +98,24 @@ export class ZylosMaintenanceExecutor {
         }
         await report({ status: 'preflight_ok', result: { version } });
         await report({ status: 'executing', result: { version } });
-        const zylosArgs = ['upgrade', 'cutie', '--yes', '--skip-eval', '--json'];
-        if (version !== 'latest') {
-            zylosArgs.push('--version', version);
-        }
-        try {
-            execSync(zylosArgs.join(' ').replace(/^/, 'zylos '), {
-                stdio: 'pipe',
-                timeout: 120000,
-                env: { ...process.env, CUTIE_SELF_UPGRADE: '1' },
-            });
-        }
-        catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            throw new Error(`zylos upgrade failed: ${message}`);
-        }
+        // Report success BEFORE spawning — zylos CLI step [1/8] stop_service will
+        // pm2 stop this process, so status must be reported while WS is still alive.
         const delivery = await report({
             status: 'success',
             result: { version, install_method: 'zylos_upgrade', restart_scheduled: true },
         });
         await this.scheduleExitAfterAck(delivery);
+        // Spawn detached: survives parent being killed by zylos stop_service.
+        const zylosArgs = ['upgrade', 'cutie', '--yes', '--skip-eval', '--json'];
+        if (version !== 'latest') {
+            zylosArgs.push('--version', version);
+        }
+        const child = spawn('zylos', zylosArgs, {
+            detached: true,
+            stdio: 'ignore',
+            env: { ...process.env, CUTIE_SELF_UPGRADE: '1' },
+        });
+        child.unref();
     }
     async restart(report) {
         await report({ status: 'preflight_ok', result: { autostart: 'pm2' } });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import type {
   MaintenanceCommand,
   MaintenanceReport,
@@ -9,11 +9,14 @@ import type {
 } from '@cutie-crypto/connector-core';
 import { ZylosMaintenanceExecutor, redact } from '../src/maintenance.js';
 
+const mockUnref = vi.fn();
 vi.mock('node:child_process', () => ({
   execSync: vi.fn(() => ''),
+  spawn: vi.fn(() => ({ pid: 12345, unref: mockUnref })),
 }));
 
 const mockExecSync = vi.mocked(execSync);
+const mockSpawn = vi.mocked(spawn);
 
 function makeCommand(overrides: Partial<MaintenanceCommand> = {}): MaintenanceCommand {
   return {
@@ -91,6 +94,9 @@ describe('ZylosMaintenanceExecutor', () => {
     exitMock.mockReset();
     mockExecSync.mockReset();
     mockExecSync.mockReturnValue('' as unknown as Buffer);
+    mockSpawn.mockReset();
+    mockSpawn.mockReturnValue({ pid: 12345, unref: mockUnref } as unknown as ReturnType<typeof spawn>);
+    mockUnref.mockReset();
   });
 
   afterEach(() => {
@@ -143,23 +149,23 @@ describe('ZylosMaintenanceExecutor', () => {
   });
 
   describe('self_reinstall', () => {
-    it('calls zylos upgrade with CUTIE_SELF_UPGRADE=1', async () => {
+    it('spawns detached zylos upgrade with CUTIE_SELF_UPGRADE=1', async () => {
       const { reports, report } = collectingReporter();
       await executor.execute(
         makeCommand({ command_type: 'self_reinstall', requested_version: '2.4.0' }),
         report,
       );
 
-      expect(mockExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('zylos upgrade cutie'),
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'zylos',
+        expect.arrayContaining(['upgrade', 'cutie', '--version', '2.4.0']),
         expect.objectContaining({
+          detached: true,
+          stdio: 'ignore',
           env: expect.objectContaining({ CUTIE_SELF_UPGRADE: '1' }),
         }),
       );
-      expect(mockExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('--version 2.4.0'),
-        expect.anything(),
-      );
+      expect(mockUnref).toHaveBeenCalled();
 
       const statuses = reports.map((r) => r.status);
       expect(statuses).toEqual(['preflight_ok', 'executing', 'success']);
@@ -178,17 +184,15 @@ describe('ZylosMaintenanceExecutor', () => {
       ).rejects.toThrow('self_reinstall version must be latest or semver');
     });
 
-    it('accepts latest as version', async () => {
+    it('accepts latest as version (no --version flag)', async () => {
       const { report } = collectingReporter();
       await executor.execute(
         makeCommand({ command_type: 'self_reinstall', requested_version: 'latest' }),
         report,
       );
 
-      expect(mockExecSync).toHaveBeenCalledWith(
-        expect.not.stringContaining('--version'),
-        expect.anything(),
-      );
+      const args = mockSpawn.mock.calls[0]?.[1] as string[];
+      expect(args).not.toContain('--version');
     });
   });
 
@@ -203,16 +207,17 @@ describe('ZylosMaintenanceExecutor', () => {
       ).rejects.toThrow('rollback version must be semver');
     });
 
-    it('calls zylos upgrade with specific version', async () => {
+    it('spawns detached zylos upgrade with specific version', async () => {
       const { report } = collectingReporter();
       await executor.execute(
         makeCommand({ command_type: 'rollback', requested_version: '2.2.0' }),
         report,
       );
 
-      expect(mockExecSync).toHaveBeenCalledWith(
-        expect.stringContaining('--version 2.2.0'),
-        expect.anything(),
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'zylos',
+        expect.arrayContaining(['--version', '2.2.0']),
+        expect.objectContaining({ detached: true }),
       );
     });
   });

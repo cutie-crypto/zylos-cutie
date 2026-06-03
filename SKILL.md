@@ -1,6 +1,6 @@
 ---
 name: cutie
-version: 2.4.0
+version: 2.4.1
 description: >
   Cutie 加密货币 KOL 私域社群组件。Use when KOL 在 Cutie App / Web 收到关注用户
   提问，希望让 KOL 自训的 Claude / Codex agent 或 Coco 托管的 Codex runtime

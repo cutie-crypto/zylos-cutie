@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { applySafetyTemplates as cacheTemplates } from './safety-templates.js';
 import { buildPrompt } from './prompt-builder.js';
@@ -305,19 +305,20 @@ export class ZylosPlatformAdapter {
         const method = upgrade.method;
         log.info('selfUpgrade started', { target_version: targetVersion, method });
         if (usesZylosLifecycle) {
-            const result = await runUpgradeCommand(upgrade.command, upgrade.args, targetVersion, method);
-            const installedVersion = readInstalledVersion();
-            log.info('selfUpgrade completed via zylos CLI', {
-                target_version: targetVersion,
-                installed_package_version: installedVersion.packageVersion,
-                installed_dist_version: installedVersion.distVersion,
-                elapsed_ms: result.elapsed_ms,
-                stdout_tail: result.stdout.slice(-512),
+            // Spawn detached: zylos CLI step [1/8] stop_service does `pm2 stop zylos-cutie`,
+            // which kills this process. Detached child runs in its own process group and
+            // survives the pm2 stop. Post-upgrade hook (step 7/8) does pm2 restart with new code.
+            const child = spawn(upgrade.command, upgrade.args, {
+                detached: true,
+                stdio: 'ignore',
+                env: { ...process.env, CUTIE_SELF_UPGRADE: '1' },
             });
-            if (installedVersion.packageVersion !== targetVersion || installedVersion.distVersion !== targetVersion) {
-                throw new Error(`zylos upgrade exited 0 but disk versions are package=${installedVersion.packageVersion ?? 'unknown'} `
-                    + `dist=${installedVersion.distVersion ?? 'unknown'}, expected ${targetVersion}`);
-            }
+            child.unref();
+            log.info('selfUpgrade dispatched (detached); zylos stop_service will kill this process', {
+                target_version: targetVersion,
+                method,
+                child_pid: child.pid,
+            });
             return;
         }
         // npm-global 路径：直接 install 全局包后 process.exit，PM2 watchdog 会拉起新 process 加载新代码。
