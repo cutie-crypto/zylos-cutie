@@ -80,6 +80,12 @@ export function loadConfig(): ZylosCutieConfig {
   return { ...DEFAULT_CONFIG, ...parsed };
 }
 
+export function deleteConfig(): void {
+  if (fs.existsSync(CONFIG_FILE)) {
+    fs.unlinkSync(CONFIG_FILE);
+  }
+}
+
 export function saveConfig(cfg: ZylosCutieConfig): void {
   // HIGH-6：connector_token 是 KOL ↔ Server 凭证，必须 0o600（只有当前用户可读）。
   // 同主机其他用户能看到 token = 能假冒该 KOL connector 接 task → 泄漏 KOL 关注者

@@ -21,6 +21,7 @@ import { buildPrompt } from './prompt-builder.js';
 import { runTask } from './runner.js';
 import { log } from './logger.js';
 import { runBacktest } from './backtest-provider.js';
+import { validateProviderParams, scrubSnapshotValue } from './backtest-safety.js';
 /**
  * zylos 自己的 ErrorType 枚举（src/errors.ts）比 connector-core 的
  * RunnerErrorEnvelope.error_type 多 CONFIG_INVALID / QUEUE_FULL 两个值，
@@ -336,7 +337,7 @@ export class ZylosPlatformAdapter {
         if (reportableTools.length > 0) {
             const catalog = {
                 schema: 'cutie.backtest_tool_catalog.v1',
-                tools: reportableTools.map((t) => ({
+                tools: reportableTools.map((t) => scrubSnapshotValue({
                     tool_id: t.tool_id,
                     name: t.name,
                     provider_name: t.provider_name,
@@ -396,8 +397,12 @@ export class ZylosPlatformAdapter {
                 return { status: 'error', error_type: 'RUNNER_UNAVAILABLE', error_message: 'No default backtest tool available' };
             }
         }
-        // BLOCKING #2: wrap flat envelope into provider-expected nested format.
-        // Python providers expect { schema, backtest: {...}, provider: {...} }.
+        // W3.9 §6.1: validate provider_params against tool's param_schema
+        const providerParams = taskEnvelope['provider_params'];
+        const paramError = validateProviderParams(providerParams, tool.param_schema);
+        if (paramError) {
+            return { status: 'error', error_type: 'INVALID_PARAMS', error_message: paramError };
+        }
         const providerRequest = {
             schema: 'cutie.external_backtest.request.v1',
             backtest: taskEnvelope,

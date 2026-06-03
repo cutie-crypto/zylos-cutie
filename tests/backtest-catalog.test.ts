@@ -67,6 +67,7 @@ describe('backtest-catalog refreshAllSources', () => {
           tools: [{
             tool_id: 'local.bt.ema',
             name: 'EMA Cross',
+            wrapper_type: 'python_inprocess',
             provider_name: 'Local BT',
             engine_name: 'backtesting.py',
             engine_version: '0.6.x',
@@ -133,6 +134,7 @@ describe('backtest-catalog refreshAllSources', () => {
     const toolPayload = {
       tool_id: 'shared.tool',
       name: 'Shared Tool',
+      wrapper_type: 'local_http',
       provider_name: 'Provider',
       engine_name: 'engine',
       engine_version: '1.0',
@@ -171,12 +173,12 @@ describe('backtest-catalog refreshAllSources', () => {
       ['http://127.0.0.1:8765/health', { status: 200, body: { ok: true } }],
       ['http://127.0.0.1:8765/catalog', {
         status: 200,
-        body: { schema: 'v1', tools: [{ tool_id: 'tool-a', name: 'A', provider_name: 'P', engine_name: 'E', engine_version: '1', markets: [], timeframes: [], default: true, health: 'ok', param_schema: null, expected_outputs: [] }] },
+        body: { schema: 'v1', tools: [{ tool_id: 'tool-a', name: 'A', wrapper_type: 'local_http', provider_name: 'P', engine_name: 'E', engine_version: '1', markets: ['spot'], timeframes: ['1h'], default: true, health: 'ok', param_schema: null, expected_outputs: [] }] },
       }],
       ['http://127.0.0.1:8766/health', { status: 200, body: { ok: true } }],
       ['http://127.0.0.1:8766/catalog', {
         status: 200,
-        body: { schema: 'v1', tools: [{ tool_id: 'tool-b', name: 'B', provider_name: 'P', engine_name: 'E', engine_version: '1', markets: [], timeframes: [], default: true, health: 'ok', param_schema: null, expected_outputs: [] }] },
+        body: { schema: 'v1', tools: [{ tool_id: 'tool-b', name: 'B', wrapper_type: 'local_http', provider_name: 'P', engine_name: 'E', engine_version: '1', markets: ['spot'], timeframes: ['1h'], default: true, health: 'ok', param_schema: null, expected_outputs: [] }] },
       }],
     ]));
 

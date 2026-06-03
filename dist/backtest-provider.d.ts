@@ -29,6 +29,16 @@ export interface CatalogTool {
     health: 'ok' | 'unavailable' | 'error';
     param_schema: Record<string, unknown> | null;
     expected_outputs: string[];
+    wrapper_type?: string;
+    output_schema?: Record<string, unknown> | null;
+    execution?: {
+        mode?: string;
+        [key: string]: unknown;
+    } | null;
+    security?: {
+        live_trading?: boolean;
+        [key: string]: unknown;
+    } | null;
 }
 export interface CatalogResponse {
     schema: string;

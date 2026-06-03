@@ -31,6 +31,7 @@ import { ErrorType } from './errors.js';
 import { log } from './logger.js';
 import type { ZylosCutieConfig, BacktestToolConfig } from './config.js';
 import { runBacktest, type BacktestResponse } from './backtest-provider.js';
+import { validateProviderParams, scrubSnapshotValue } from './backtest-safety.js';
 
 type ZylosTaskInput = TaskInput & {
   task_type?: string;
@@ -395,7 +396,7 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
     if (reportableTools.length > 0) {
       const catalog = {
         schema: 'cutie.backtest_tool_catalog.v1',
-        tools: reportableTools.map((t) => ({
+        tools: reportableTools.map((t) => scrubSnapshotValue({
           tool_id: t.tool_id,
           name: t.name,
           provider_name: t.provider_name,
@@ -462,8 +463,13 @@ export class ZylosPlatformAdapter implements CorePlatformAdapter<ZylosAdapterCon
       }
     }
 
-    // BLOCKING #2: wrap flat envelope into provider-expected nested format.
-    // Python providers expect { schema, backtest: {...}, provider: {...} }.
+    // W3.9 §6.1: validate provider_params against tool's param_schema
+    const providerParams = taskEnvelope['provider_params'] as Record<string, unknown> | undefined;
+    const paramError = validateProviderParams(providerParams, tool.param_schema);
+    if (paramError) {
+      return { status: 'error', error_type: 'INVALID_PARAMS', error_message: paramError };
+    }
+
     const providerRequest = {
       schema: 'cutie.external_backtest.request.v1',
       backtest: taskEnvelope,

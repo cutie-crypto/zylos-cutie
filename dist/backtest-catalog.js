@@ -9,6 +9,7 @@
  *  - 只能有一个 default=true 的 healthy tool
  */
 import { fetchHealth, fetchCatalog } from './backtest-provider.js';
+import { isLoopbackOrPrivateHost, validateProviderCatalogTool } from './backtest-safety.js';
 import { log } from './logger.js';
 const MAX_UNREACHABLE_REFRESHES = 3;
 /** Track consecutive failures per source across refreshes (in-memory). */
@@ -59,6 +60,18 @@ export async function refreshAllSources(config) {
     // Refresh each enabled source
     const newToolsBySource = new Map();
     for (const source of sources) {
+        // W3.9 §12: SSRF guard — reject non-private provider hosts
+        try {
+            const baseUrl = new URL(source.base_url);
+            if (!isLoopbackOrPrivateHost(baseUrl.hostname)) {
+                log.warn(`backtest provider ${source.id} base_url host is not private, skipping`);
+                continue;
+            }
+        }
+        catch {
+            log.warn(`backtest provider ${source.id} base_url is malformed, skipping`);
+            continue;
+        }
         // Health check first
         const healthResult = await fetchHealth(source);
         if (!healthResult.ok) {
@@ -109,9 +122,20 @@ export async function refreshAllSources(config) {
             newToolsBySource.set(source.id, previousTools);
             continue;
         }
-        const catalogTools = (catalogResult.data.tools ?? []).map((t) => catalogToolToConfig(t, source));
+        // W3.9 §5.1: validate each tool against v1 schema before accepting
+        const rawTools = catalogResult.data.tools ?? [];
+        const validTools = [];
+        for (const tool of rawTools) {
+            const rejectReason = validateProviderCatalogTool(tool);
+            if (rejectReason) {
+                log.warn(`backtest provider ${source.id} tool ${tool.tool_id} rejected: ${rejectReason}`);
+                continue;
+            }
+            validTools.push(tool);
+        }
+        const catalogTools = validTools.map((t) => catalogToolToConfig(t, source));
         newToolsBySource.set(source.id, catalogTools);
-        log.info(`backtest provider ${source.id} returned ${catalogTools.length} tools`);
+        log.info(`backtest provider ${source.id} accepted ${catalogTools.length}/${rawTools.length} tools`);
     }
     // Merge: retained + new tools, checking for global tool_id conflicts
     const mergedTools = [...retainedTools];

@@ -7,6 +7,7 @@
 import { ConnectorConnection as CoreConnectorConnection, } from '@cutie-crypto/connector-core';
 import { ZylosPlatformAdapter } from './adapter.js';
 import { detectRuntime } from './runtime-detect.js';
+import { ZylosMaintenanceExecutor } from './maintenance.js';
 import { COMPONENT_VERSION } from './version.js';
 export class ZylosCutieConnection {
     core;
@@ -37,6 +38,10 @@ export class ZylosCutieConnection {
             adapter,
             connectorVersion: COMPONENT_VERSION,
             ...(deps.logger ? { logger: deps.logger } : {}),
+            maintenanceExecutor: new ZylosMaintenanceExecutor({
+                config: deps.config,
+                connectorVersion: COMPONENT_VERSION,
+            }),
         });
     }
     start() {

@@ -6,6 +6,7 @@
  */
 
 import type { BacktestProviderSource, BacktestToolConfig } from './config.js';
+import { isLoopbackOrPrivateHost, scrubReportUrl, MAX_PROVIDER_RESPONSE_BYTES } from './backtest-safety.js';
 
 /* ------------------------------------------------------------------ */
 /*  Response types                                                     */
@@ -36,6 +37,10 @@ export interface CatalogTool {
   health: 'ok' | 'unavailable' | 'error';
   param_schema: Record<string, unknown> | null;
   expected_outputs: string[];
+  wrapper_type?: string;
+  output_schema?: Record<string, unknown> | null;
+  execution?: { mode?: string; [key: string]: unknown } | null;
+  security?: { live_trading?: boolean; [key: string]: unknown } | null;
 }
 
 export interface CatalogResponse {
@@ -100,6 +105,24 @@ async function fetchJson<T>(
     timeout_ms: number;
   },
 ): Promise<ProviderResult<T>> {
+  // W3.9 §12: SSRF guard — only allow loopback/private hosts
+  try {
+    const parsed = new URL(url);
+    if (!isLoopbackOrPrivateHost(parsed.hostname)) {
+      return {
+        ok: false,
+        error_type: 'INVALID_URL',
+        error_message: `Provider host '${parsed.hostname}' is not loopback/private (W3.9 §12)`,
+      };
+    }
+  } catch {
+    return {
+      ok: false,
+      error_type: 'INVALID_URL',
+      error_message: `Provider URL is malformed: ${url}`,
+    };
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeout_ms);
   try {
@@ -112,9 +135,38 @@ async function fetchJson<T>(
     const res = await fetch(url, init);
     clearTimeout(timer);
 
+    // W3.9: response size limit — prevent OOM from runaway provider
+    const contentLength = res.headers.get('content-length');
+    if (contentLength && Number(contentLength) > MAX_PROVIDER_RESPONSE_BYTES) {
+      return {
+        ok: false,
+        error_type: 'MALFORMED_RESPONSE',
+        error_message: `Provider response Content-Length ${contentLength} exceeds ${MAX_PROVIDER_RESPONSE_BYTES} bytes`,
+      };
+    }
+
+    let text: string;
+    try {
+      text = await res.text();
+    } catch {
+      return {
+        ok: false,
+        error_type: 'MALFORMED_RESPONSE',
+        error_message: `Provider response body could not be read (HTTP ${res.status})`,
+      };
+    }
+
+    if (text.length > MAX_PROVIDER_RESPONSE_BYTES) {
+      return {
+        ok: false,
+        error_type: 'MALFORMED_RESPONSE',
+        error_message: `Provider response body exceeds ${MAX_PROVIDER_RESPONSE_BYTES} bytes`,
+      };
+    }
+
     let json: unknown;
     try {
-      json = await res.json();
+      json = JSON.parse(text);
     } catch {
       return {
         ok: false,
@@ -183,7 +235,7 @@ export async function runBacktest(
   tool: BacktestToolConfig,
   envelope: unknown,
 ): Promise<ProviderResult<BacktestResponse>> {
-  return fetchJson<BacktestResponse>(tool.endpoint, {
+  const result = await fetchJson<BacktestResponse>(tool.endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -192,4 +244,14 @@ export async function runBacktest(
     body: JSON.stringify(envelope),
     timeout_ms: tool.timeout_ms,
   });
+  // W3.9 §7: scrub report_url before returning
+  if (result.ok && result.data.result_status === 'success') {
+    const scrubbed = scrubReportUrl(result.data.report_url);
+    if (scrubbed !== undefined) {
+      result.data.report_url = scrubbed;
+    } else {
+      delete result.data.report_url;
+    }
+  }
+  return result;
 }

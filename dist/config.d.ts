@@ -58,5 +58,6 @@ export interface ZylosCutieConfig {
 }
 export declare const DEFAULT_CONFIG: ZylosCutieConfig;
 export declare function loadConfig(): ZylosCutieConfig;
+export declare function deleteConfig(): void;
 export declare function saveConfig(cfg: ZylosCutieConfig): void;
 //# sourceMappingURL=config.d.ts.map

@@ -13,6 +13,7 @@ import {
 import { ZylosPlatformAdapter, type ZylosAdapterConfig } from './adapter.js';
 import type { ZylosCutieConfig } from './config.js';
 import { detectRuntime, type RuntimeDetectResult } from './runtime-detect.js';
+import { ZylosMaintenanceExecutor } from './maintenance.js';
 import { COMPONENT_VERSION } from './version.js';
 
 export interface ZylosConnectionDeps {
@@ -55,6 +56,10 @@ export class ZylosCutieConnection {
       adapter,
       connectorVersion: COMPONENT_VERSION,
       ...(deps.logger ? { logger: deps.logger } : {}),
+      maintenanceExecutor: new ZylosMaintenanceExecutor({
+        config: deps.config,
+        connectorVersion: COMPONENT_VERSION,
+      }),
     });
   }
 
