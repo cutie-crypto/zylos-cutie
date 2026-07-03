@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import { STATE_DIR, SAFETY_TEMPLATES_FILE } from './paths.js';
 import { log } from './logger.js';
-import { atomicWriteFileSync } from './atomic-fs.js';
+import { atomicWriteFileSync } from '@cutie-crypto/connector-core';
 export function applySafetyTemplates(templates) {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     const payload = {

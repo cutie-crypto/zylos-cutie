@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import { CONFIG_FILE } from './paths.js';
-import { atomicWriteFileSync } from './atomic-fs.js';
+import { atomicWriteFileSync } from '@cutie-crypto/connector-core';
 
 /** W3.8：本地回测 provider source（connector 本地 config，不上报 Server） */
 export interface BacktestProviderSource {

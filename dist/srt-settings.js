@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CODEX_HOME, CODEX_HOME_STATUS_FILE, STATE_DIR, SRT_SETTINGS_FILE } from './paths.js';
-import { atomicWriteFileSync } from './atomic-fs.js';
+import { atomicWriteFileSync } from '@cutie-crypto/connector-core';
 /**
  * 默认 SRT settings。runtime 决定 Codex 凭据目录写策略：
  *   - 有 OPENAI_API_KEY/CODEX_API_KEY 时走隔离 CODEX_HOME（用户自带 key / 未来 broker env）

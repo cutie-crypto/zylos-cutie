@@ -1,6 +1,6 @@
 {
   "name": "@cutie-crypto/zylos-cutie",
-  "version": "2.4.1",
+  "version": "2.4.2",
   "description": "Cutie KOL agent component for Zylos / COCO runtime — Claude / Codex CLI under SRT sandbox",
   "type": "module",
   "main": "dist/index.js",
@@ -52,7 +52,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "0.0.50",
-    "@cutie-crypto/connector-core": "^0.6.1",
+    "@cutie-crypto/connector-core": "^0.9.0",
     "@types/ws": "^8.18.1",
     "ws": "^8.20.0"
   },

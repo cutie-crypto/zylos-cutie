@@ -15,7 +15,7 @@ import path from 'node:path';
 import { SafetyTemplates } from '@cutie-crypto/connector-core';
 import { STATE_DIR, SAFETY_TEMPLATES_FILE } from './paths.js';
 import { log } from './logger.js';
-import { atomicWriteFileSync } from './atomic-fs.js';
+import { atomicWriteFileSync } from '@cutie-crypto/connector-core';
 
 export interface CachedTemplates extends SafetyTemplates {
   cached_at: string;

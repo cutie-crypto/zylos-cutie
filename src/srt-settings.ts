@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CODEX_HOME, CODEX_HOME_STATUS_FILE, STATE_DIR, SRT_SETTINGS_FILE } from './paths.js';
-import { atomicWriteFileSync } from './atomic-fs.js';
+import { atomicWriteFileSync } from '@cutie-crypto/connector-core';
 
 export interface SrtSettings {
   network: {

@@ -17,7 +17,7 @@ import { detectRuntime } from './runtime-detect.js';
 import { buildDefaultSrtSettings, writeSrtSettings, ensureCodexHome } from './srt-settings.js';
 import { ZylosCutieConnection } from './connection.js';
 import { log } from './logger.js';
-import { atomicWriteFileSync } from './atomic-fs.js';
+import { atomicWriteFileSync } from '@cutie-crypto/connector-core';
 async function main() {
     loadEnvFile();
     const config = loadConfig();

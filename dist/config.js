@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs';
 import { CONFIG_FILE } from './paths.js';
-import { atomicWriteFileSync } from './atomic-fs.js';
+import { atomicWriteFileSync } from '@cutie-crypto/connector-core';
 export const DEFAULT_CONFIG = {
     enabled: true,
     server_url: 'https://server.tokenbeep.com',

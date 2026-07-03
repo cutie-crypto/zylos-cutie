@@ -1,1 +1,0 @@
-{"version":3,"file":"atomic-fs.d.ts","sourceRoot":"","sources":["../src/atomic-fs.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;GAWG;AAKH,MAAM,WAAW,kBAAkB;IACjC,2DAA2D;IAC3D,IAAI,CAAC,EAAE,MAAM,CAAC;IACd,uDAAuD;IACvD,MAAM,CAAC,EAAE,OAAO,CAAC;CAClB;AAED,wBAAgB,mBAAmB,CACjC,QAAQ,EAAE,MAAM,EAChB,OAAO,EAAE,MAAM,EACf,IAAI,GAAE,kBAAuB,GAC5B,IAAI,CAgCN"}
