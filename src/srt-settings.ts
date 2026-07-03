@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CODEX_HOME, CODEX_HOME_STATUS_FILE, STATE_DIR, SRT_SETTINGS_FILE } from './paths.js';
+import { atomicWriteFileSync } from './atomic-fs.js';
 
 export interface SrtSettings {
   network: {
@@ -98,8 +99,7 @@ export function buildDefaultSrtSettings(runtime: 'claude' | 'codex'): SrtSetting
 }
 
 export function writeSrtSettings(settings: SrtSettings): string {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(SRT_SETTINGS_FILE, JSON.stringify(settings, null, 2));
+  atomicWriteFileSync(SRT_SETTINGS_FILE, JSON.stringify(settings, null, 2));
   return SRT_SETTINGS_FILE;
 }
 
@@ -164,8 +164,7 @@ export function ensureCodexHome(_claudeFallbackBin: string | null, codexBin: str
 }
 
 function writeCodexHomeStatus(payload: Record<string, unknown>): void {
-  fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(CODEX_HOME_STATUS_FILE, JSON.stringify(payload, null, 2));
+  atomicWriteFileSync(CODEX_HOME_STATUS_FILE, JSON.stringify(payload, null, 2));
 }
 
 function getManagedCodexApiKey(): string | null {
@@ -189,9 +188,8 @@ function getCodexBaseUrlHost(): string | null {
 }
 
 function writeManagedCodexHome(apiKey: string): void {
-  fs.mkdirSync(CODEX_HOME, { recursive: true });
   const authPath = path.join(CODEX_HOME, 'auth.json');
-  fs.writeFileSync(
+  atomicWriteFileSync(
     authPath,
     JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: apiKey }, null, 2) + '\n',
     { mode: 0o600 },
@@ -205,7 +203,7 @@ function writeManagedCodexHome(apiKey: string): void {
   if (baseUrl) {
     configLines.push(`openai_base_url = "${escapeTomlString(baseUrl)}"`);
   }
-  fs.writeFileSync(path.join(CODEX_HOME, 'config.toml'), `${configLines.join('\n')}\n`, { mode: 0o600 });
+  atomicWriteFileSync(path.join(CODEX_HOME, 'config.toml'), `${configLines.join('\n')}\n`, { mode: 0o600 });
 }
 
 function escapeTomlString(value: string): string {

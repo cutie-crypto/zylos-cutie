@@ -19,6 +19,7 @@ import { detectRuntime } from './runtime-detect.js';
 import { buildDefaultSrtSettings, writeSrtSettings, ensureCodexHome } from './srt-settings.js';
 import { ZylosCutieConnection } from './connection.js';
 import { log } from './logger.js';
+import { atomicWriteFileSync } from './atomic-fs.js';
 
 async function main(): Promise<void> {
   loadEnvFile();
@@ -31,7 +32,7 @@ async function main(): Promise<void> {
   fs.mkdirSync(STATE_DIR, { recursive: true });
 
   const sandbox = detectSandbox();
-  fs.writeFileSync(SANDBOX_DETECT_FILE, JSON.stringify(sandbox, null, 2));
+  atomicWriteFileSync(SANDBOX_DETECT_FILE, JSON.stringify(sandbox, null, 2));
   if (sandbox.status !== 'ok') {
     log.error(`sandbox unavailable: ${sandbox.hint ?? sandbox.missing.join(',')}`);
     log.error('service will idle until restart; running tasks will fail with SANDBOX_UNAVAILABLE');
@@ -40,7 +41,7 @@ async function main(): Promise<void> {
   }
 
   const runtime = detectRuntime();
-  fs.writeFileSync(RUNTIME_DETECT_FILE, JSON.stringify(runtime, null, 2));
+  atomicWriteFileSync(RUNTIME_DETECT_FILE, JSON.stringify(runtime, null, 2));
   if (runtime.status !== 'ok') {
     log.error(`runtime unavailable: ${runtime.hint ?? 'no claude/codex'}`);
     log.error('service will idle until restart; running tasks will fail with RUNNER_UNAVAILABLE');

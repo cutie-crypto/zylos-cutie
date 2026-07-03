@@ -15,6 +15,7 @@ import path from 'node:path';
 import { SafetyTemplates } from '@cutie-crypto/connector-core';
 import { STATE_DIR, SAFETY_TEMPLATES_FILE } from './paths.js';
 import { log } from './logger.js';
+import { atomicWriteFileSync } from './atomic-fs.js';
 
 export interface CachedTemplates extends SafetyTemplates {
   cached_at: string;
@@ -30,7 +31,9 @@ export function applySafetyTemplates(templates: SafetyTemplates): CachedTemplate
   };
   // 0o600：只允许当前用户读，避免同主机其他组件 / 其他用户读到模板
   // （即便 token 由 Server 持有，模板内容仍含 KOL 指令细节）
-  fs.writeFileSync(
+  // 原子写：中断/半写会让 loadSafetyTemplates 读到损坏 JSON，被 fail-closed
+  // 判成"未 paired"——比截断人格片段更安全，但仍不该无谓触发。
+  atomicWriteFileSync(
     SAFETY_TEMPLATES_FILE,
     JSON.stringify(payload, null, 2),
     { mode: 0o600 },

@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CODEX_HOME, CODEX_HOME_STATUS_FILE, STATE_DIR, SRT_SETTINGS_FILE } from './paths.js';
+import { atomicWriteFileSync } from './atomic-fs.js';
 /**
  * 默认 SRT settings。runtime 决定 Codex 凭据目录写策略：
  *   - 有 OPENAI_API_KEY/CODEX_API_KEY 时走隔离 CODEX_HOME（用户自带 key / 未来 broker env）
@@ -78,8 +79,7 @@ export function buildDefaultSrtSettings(runtime) {
     };
 }
 export function writeSrtSettings(settings) {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(SRT_SETTINGS_FILE, JSON.stringify(settings, null, 2));
+    atomicWriteFileSync(SRT_SETTINGS_FILE, JSON.stringify(settings, null, 2));
     return SRT_SETTINGS_FILE;
 }
 /**
@@ -141,8 +141,7 @@ export function ensureCodexHome(_claudeFallbackBin, codexBin) {
     });
 }
 function writeCodexHomeStatus(payload) {
-    fs.mkdirSync(STATE_DIR, { recursive: true });
-    fs.writeFileSync(CODEX_HOME_STATUS_FILE, JSON.stringify(payload, null, 2));
+    atomicWriteFileSync(CODEX_HOME_STATUS_FILE, JSON.stringify(payload, null, 2));
 }
 function getManagedCodexApiKey() {
     const value = process.env['OPENAI_API_KEY']?.trim() || process.env['CODEX_API_KEY']?.trim() || '';
@@ -164,9 +163,8 @@ function getCodexBaseUrlHost() {
     }
 }
 function writeManagedCodexHome(apiKey) {
-    fs.mkdirSync(CODEX_HOME, { recursive: true });
     const authPath = path.join(CODEX_HOME, 'auth.json');
-    fs.writeFileSync(authPath, JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: apiKey }, null, 2) + '\n', { mode: 0o600 });
+    atomicWriteFileSync(authPath, JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: apiKey }, null, 2) + '\n', { mode: 0o600 });
     fs.chmodSync(authPath, 0o600);
     const baseUrl = getCodexBaseUrl();
     const configLines = [
@@ -175,7 +173,7 @@ function writeManagedCodexHome(apiKey) {
     if (baseUrl) {
         configLines.push(`openai_base_url = "${escapeTomlString(baseUrl)}"`);
     }
-    fs.writeFileSync(path.join(CODEX_HOME, 'config.toml'), `${configLines.join('\n')}\n`, { mode: 0o600 });
+    atomicWriteFileSync(path.join(CODEX_HOME, 'config.toml'), `${configLines.join('\n')}\n`, { mode: 0o600 });
 }
 function escapeTomlString(value) {
     return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
